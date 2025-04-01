@@ -60,6 +60,7 @@ class TomogramCoveragePlanner(object):
         self.elev_g = elev_g
         elev_c = tomogram[4]
         elev_c = np.nan_to_num(elev_c, nan=1e6)
+        self.trav_raw = tomogram[5]         # Adding raw trav cost (no inflation) for reward calculation
 
         
         self.initPlanner(self.trav, trav_gx, trav_gy, elev_g, elev_c)

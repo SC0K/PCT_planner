@@ -197,5 +197,6 @@ class Tomogram(object):
             't_trav': gpu_t_trav, 
             't_simp': gpu_t_simp, 
         }
+        raw_cost = self.trav_cost[idx_simp].get()
         
-        return layers_t, trav_gx, trav_gy, layers_g, layers_c, t_gpu
+        return layers_t, trav_gx, trav_gy, layers_g, layers_c, t_gpu, raw_cost
