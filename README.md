@@ -65,7 +65,10 @@ Three example scenarios are provided: **"Spiral"**, **"Building"**, and **"Plaza
 To plan in a scenario, first you need to construct the scene tomogram using the pcd file.
 - Unzip the pcd files in **rsc/pcd/pcd_files.zip** to **rsc/pcd/**.
 - For scene **"Spiral"**, you can download the pcd file from [3D2M planner spiral0.3_2.pcd](https://github.com/ZJU-FAST-Lab/3D2M-planner/tree/main/planner/src/read_pcd/PCDFiles).
-- Run **roscore**, start **RViz** with the provided config (**rsc/rviz/pct_ros.rviz**). 
+- Run **roscore**, start **RViz** with the provided config (**rsc/rviz/pct_ros.rviz**).
+- ```bash
+  rviz -d ~/catkin_workspaces/pct_planning/src/PCT_planner/rsc/rviz/pct_ros.rviz 
+  ``` 
 - In **tomography/scripts/**, run **tomography.py** with the **--scene** argument:
 
 ```bash
