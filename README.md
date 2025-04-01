@@ -65,7 +65,10 @@ Three example scenarios are provided: **"Spiral"**, **"Building"**, and **"Plaza
 To plan in a scenario, first you need to construct the scene tomogram using the pcd file.
 - Unzip the pcd files in **rsc/pcd/pcd_files.zip** to **rsc/pcd/**.
 - For scene **"Spiral"**, you can download the pcd file from [3D2M planner spiral0.3_2.pcd](https://github.com/ZJU-FAST-Lab/3D2M-planner/tree/main/planner/src/read_pcd/PCDFiles).
-- Run **roscore**, start **RViz** with the provided config (**rsc/rviz/pct_ros.rviz**). 
+- Run **roscore**, start **RViz** with the provided config (**rsc/rviz/pct_ros.rviz**).
+- ```bash
+  rviz -d ~/catkin_workspaces/pct_planning/src/PCT_planner/rsc/rviz/pct_ros.rviz 
+  ``` 
 - In **tomography/scripts/**, run **tomography.py** with the **--scene** argument:
 
 ```bash
@@ -81,7 +84,7 @@ After the tomogram is constructed, you can run the trajectory generation example
 - In **planner/scripts/**, run **plan.py** with the **--scene** argument:
 
 ```bash
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/YOUR/DIRECTORY/TO/PCT_planner/planner/lib/3rdparty/gtsam-4.1.1/install/lib
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/lib/3rdparty/gtsam-4.1.1/install/lib
 cd planner/scripts/
 python3 plan.py --scene Spiral
 ```
