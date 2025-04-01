@@ -86,7 +86,7 @@ class Tomography(object):
         t_trav = 0.0
         t_simp = 0.0
         t_all = 0.0
-        n_repeat = 10
+        n_repeat = 1
 
         """ 
         GPU time benchmark, where CUDA events are synchronized for correct time measurement.
@@ -173,6 +173,9 @@ class Tomography(object):
         n_slice = layers_g.shape[0]
         vis_g = layers_g.copy()
         vis_t = layers_t.copy() 
+        print("vis_g shape: ", vis_g.shape)
+        print("vis_t shape: ", vis_t.shape)
+        
         layer_points = self.VISPROTO_P.copy()
         layer_points[:, :2] += self.center
 

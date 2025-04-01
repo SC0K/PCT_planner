@@ -54,10 +54,16 @@ class TomogramPlanner(object):
         elev_c = np.nan_to_num(elev_c, nan=1e6)
 
         self.initPlanner(trav, trav_gx, trav_gy, elev_g, elev_c)
+        # exportTomogram(np.stack((layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c)), map_file)
+        # layers_t : travel cost
+        # trav_grad_x : gradient x
+        # trav_grad_y : gradient y
+        # layers_g : ground height
+        # layers_c : ceiling height
         
     def initPlanner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
-        diff_t = trav[1:] - trav[:-1]
-        diff_g = np.abs(elev_g[1:] - elev_g[:-1])
+        diff_t = trav[1:] - trav[:-1]       # difference of travel cost between two slices
+        diff_g = np.abs(elev_g[1:] - elev_g[:-1])   # difference of elevation between two slices
 
         gateway_up = np.zeros_like(trav, dtype=bool)
         mask_t = diff_t < -8.0
@@ -71,7 +77,7 @@ class TomogramPlanner(object):
         
         gateway = np.zeros_like(trav, dtype=np.int32)
         gateway[gateway_up] = 2
-        gateway[gateway_dn] = -2
+        gateway[gateway_dn] = -2    # Boolean indexing
 
         self.planner = ele_planner.OfflineElePlanner(
             max_heading_rate=self.max_heading_rate, use_quintic=self.use_quintic
