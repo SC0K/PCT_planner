@@ -233,16 +233,17 @@ class TomogramCoveragePlanner(object):
         best_point = None
         best_angle = None
         best_explored_cells = self.explored.copy()
-        best_reward = -1
         candidate_points_idx = np.full(sampled_points_idx.shape, np.nan, dtype=np.float32)
         candidate_points_angle = np.full(sampled_points_idx.shape[0], np.nan, dtype=np.float32)
         candidate_points_xyz = np.full(sampled_points_xyz.shape, np.nan, dtype=np.float32)
         target_num = np.count_nonzero(~np.isnan(self.explored))
-        while np.sum(self.explored) < self.cfg.planner.coverage_threshold * target_num:
+        for j in range(candidate_points_idx.shape[0]):
             if finished == True:
-                break
-            ## Loop to find the next best point
-            for j in range(candidate_points_idx.shape[0]):
+                    break
+            if np.sum(self.explored) < self.cfg.planner.coverage_threshold * target_num: 
+                best_reward = -1               
+                ## Loop to find the next best point
+                print("percent of coverage:", np.sum(self.explored) / target_num)
                 for i, point_index in enumerate(sampled_points_idx):
                     angle, reward, explored_cells = self.BestAnglewithReward(point_index)
                     if reward > best_reward:
@@ -257,15 +258,24 @@ class TomogramCoveragePlanner(object):
                 matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
                 if len(matching_indices) > 0:
                     candidate_points_xyz[j] = sampled_points_xyz[matching_indices[0]]
+                    print("Best reward:", best_reward)
                 if best_reward < min_reward:
                     finished = True
                     break
                 # Remove the best point from the sampled points
-                sampled_points_idx = np.delete(sampled_points_idx, np.where(sampled_points_idx == best_point), axis=0)
-                sampled_points_xyz = np.delete(sampled_points_xyz, np.where(sampled_points_idx == best_point), axis=0)
+                                # Find the matching row index for best_point
+                matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
+                
+                # Check if a match is found before attempting to delete
+                if len(matching_indices) > 0:
+                    sampled_points_idx = np.delete(sampled_points_idx, matching_indices[0], axis=0)
+                    sampled_points_xyz = np.delete(sampled_points_xyz, matching_indices[0], axis=0)
+                else:
+                    print("Warning: Best point not found in sampled_points_idx. Skipping deletion.")
                 print("Number of points chosen:", j)
+    
         # Remove NaN values from candidate points
-        valid_mask = ~np.isnan(candidate_points_idx[:, 0])
+        valid_mask = ~np.isnan(candidate_points_idx).any(axis=1)
         candidate_points_idx = candidate_points_idx[valid_mask]
         candidate_points_angle = candidate_points_angle[valid_mask]
         candidate_points_xyz = candidate_points_xyz[valid_mask]
