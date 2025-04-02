@@ -2,13 +2,18 @@ class ConfigPlanner():
     use_quintic = True
     max_heading_rate = 10
     cost_barrier = 50
-    sensor_range = 2
+    sample_num = 10
+    coverage_threshold = 0.5
 
 
 class ConfigWrapper():
     tomo_dir = '/rsc/tomogram/'
+class ConfigSensor():
+    sensor_range = 2.0
+    sensor_fov = 360    # degrees
 
 
 class Config():
     planner = ConfigPlanner()
     wrapper = ConfigWrapper()
+    sensor = ConfigSensor()

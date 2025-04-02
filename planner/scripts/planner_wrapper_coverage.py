@@ -2,6 +2,7 @@ import os
 import sys
 import pickle
 import numpy as np
+import math
 
 from utils import *
 
@@ -35,6 +36,9 @@ class TomogramCoveragePlanner(object):
         self.sensor_range = None
         self.elev_g = None
         self.trav = None
+        self.explored = None
+        self.sensor_range = self.cfg.sensor.sensor_range
+        self.sensor_fov = self.cfg.sensor.sensor_fov
 
     def loadTomogram(self, tomo_file):
         with open(self.tomo_dir + tomo_file + '.pickle', 'rb') as handle:
@@ -49,7 +53,7 @@ class TomogramCoveragePlanner(object):
             self.slice_dh = float(data_dict['slice_dh'])
             self.map_dim = [tomogram.shape[2], tomogram.shape[3]]
             self.offset = np.array([int(self.map_dim[0] / 2), int(self.map_dim[1] / 2)], dtype=np.int32)
-            self.sensor_range = int(round(self.cfg.planner.sensor_range / self.resolution))
+            self.sensor_range = int(round(self.cfg.sensor.sensor_range / self.resolution))
 
 
         self.trav = tomogram[0]
@@ -70,7 +74,28 @@ class TomogramCoveragePlanner(object):
         # trav_grad_y : gradient y
         # layers_g : ground height
         # layers_c : ceiling height
-        
+
+        # Initialize the explored graph
+        self.explored = self.initExplorationGraph()
+
+    def initExplorationGraph(self):
+        """
+        Initialize a graph to track whether cells in the elevation grid (elev_g) are explored.
+
+        Returns:
+            np.ndarray: A float array where NaN indicates ignored cells, 0.0 indicates unexplored cells, 
+                        and 1.0 indicates explored cells.
+        """
+        # Initialize the exploration graph with NaN values
+        exploration_graph = np.full_like(self.elev_g, np.nan, dtype=np.float32)
+
+        # Set non-NaN cells to 0.0 (unexplored)
+        nan_mask = np.isnan(self.elev_g)
+        exploration_graph[~nan_mask] = 0.0
+
+        return exploration_graph
+    
+
     def initPlanner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
         diff_t = trav[1:] - trav[:-1]       # difference of travel cost between two slices
         diff_g = np.abs(elev_g[1:] - elev_g[:-1])   # difference of elevation between two slices
@@ -142,110 +167,203 @@ class TomogramCoveragePlanner(object):
     def sampleTraversablePoints(self, num_samples):
         """
         Sample a uniform set of traversable points from the travel cost map.
-
+    
         Args:
             num_samples (int): The number of points to sample.
-
+    
         Returns:
-            np.ndarray: Array of sampled traversable points (x, y indices).
+            np.ndarray: Array of sampled traversable points (x, y, z indices).
         """
         # Get the indices of all traversable points (travel cost < max_cost)
         traversable_mask = (self.trav < self.cost_barrier) & (self.elev_g >= 0)  # cost less than barrier and is a valid grid
-
         traversable_indices = np.argwhere(traversable_mask)
-
+    
         # If there are fewer traversable points than requested samples, return all
         if len(traversable_indices) <= num_samples:
-            return traversable_indices
-
+            sampled_xyz = np.empty((len(traversable_indices), 3), dtype=np.float32)
+            for idx, (s, x, y) in enumerate(traversable_indices):
+                map_x = (x - self.offset[0]) * self.resolution + self.center[0]
+                map_y = (y - self.offset[1]) * self.resolution + self.center[1]
+                map_z = self.elev_g[s, x, y]
+                sampled_xyz[idx] = [map_x, map_y, map_z]
+            return traversable_indices, sampled_xyz
+    
         # Uniformly sample from the traversable points
         sampled_idx = traversable_indices[
             np.random.choice(len(traversable_indices), num_samples, replace=False)
         ]
-
-        sampled_xyz = []
-        # Convert to (x, y, z) format
-        for s,x,y in sampled_idx:
-            # Convert grid indices to map coordinates
+    
+        # Preallocate the sampled_xyz array
+        sampled_xyz = np.empty((num_samples, 3), dtype=np.float32)
+    
+        # Fill the sampled_xyz array
+        for idx, (s, x, y) in enumerate(sampled_idx):
             map_x = (x - self.offset[0]) * self.resolution + self.center[0]
             map_y = (y - self.offset[1]) * self.resolution + self.center[1]
-            map_z = self.elev_g[s,x,y]
-            sampled_xyz.append([map_x, map_y, map_z])
-        sampled_xyz = np.array(sampled_xyz, dtype=np.float32)
-
-
-        return sampled_idx , sampled_xyz
+            map_z = self.elev_g[s, x, y]
+            sampled_xyz[idx] = [map_x, map_y, map_z]
     
-    def calculateRewards(self, sampled_points, seen_cells, trav, sensor_range):
+        return sampled_idx, sampled_xyz
+    def idx2pos_3D(self, idx):
+        """
+        Convert grid indices to map coordinates.
+
+        Args:
+            idx (np.ndarray): The grid indices (s, x, y).
+
+        Returns:
+            np.ndarray: The map coordinates (x, y).
+        """
+        # Convert grid indices to map coordinates
+        map_x = (idx[1] - self.offset[0]) * self.resolution + self.center[0]
+        map_y = (idx[2] - self.offset[1]) * self.resolution + self.center[1]
+        map_z = self.elev_g[idx[0], idx[1], idx[2]]
+        return np.array([map_x, map_y, map_z], dtype=np.float32)
+    
+    def nextBestView(self):
         """
         Calculate the reward for each sampled point based on the number of unseen cells in its neighborhood.
-    
-        Args:
-            sampled_points (np.ndarray): Array of sampled traversable points (x, y indices).
-            seen_cells (np.ndarray): Boolean grid indicating which cells have been seen.
-            trav (np.ndarray): The travel cost map.
-            sensor_range (int): The radius of the sensor range.
     
         Returns:
             np.ndarray: Array of rewards for each sampled point.
         """
-        rewards = np.zeros(len(sampled_points), dtype=np.int32)
-    
-        for i, (x, y) in enumerate(sampled_points):
-            # Define the neighborhood bounds
-            x_min = max(0, x - sensor_range)
-            x_max = min(trav.shape[0], x + sensor_range + 1)
-            y_min = max(0, y - sensor_range)
-            y_max = min(trav.shape[1], y + sensor_range + 1)
-    
-            # Count the number of unseen cells in the neighborhood
-            neighborhood = seen_cells[x_min:x_max, y_min:y_max]
-            rewards[i] = np.sum(~neighborhood)  # Count unseen cells
-    
-        return rewards
-    
-    def nextBestView(self, trav, sensor_range, coverage_threshold=0.9, num_samples=100):
+        min_reward = 10
+        finished = False
+        sampled_points_idx, sampled_points_xyz= self.sampleTraversablePoints(num_samples=self.cfg.planner.sample_num)
+        best_point = None
+        best_angle = None
+        best_explored_cells = self.explored.copy()
+        best_reward = -1
+        candidate_points_idx = np.full(sampled_points_idx.shape, np.nan, dtype=np.float32)
+        candidate_points_angle = np.full(sampled_points_idx.shape[0], np.nan, dtype=np.float32)
+        candidate_points_xyz = np.full(sampled_points_xyz.shape, np.nan, dtype=np.float32)
+        target_num = np.count_nonzero(~np.isnan(self.explored))
+        while np.sum(self.explored) < self.cfg.planner.coverage_threshold * target_num:
+            if finished == True:
+                break
+            ## Loop to find the next best point
+            for j in range(candidate_points_idx.shape[0]):
+                for i, point_index in enumerate(sampled_points_idx):
+                    angle, reward, explored_cells = self.BestAnglewithReward(point_index)
+                    if reward > best_reward:
+                        best_reward = reward
+                        best_point = point_index
+                        best_angle = angle
+                        best_explored_cells = explored_cells
+                # Update the explored graph with the best angle
+                self.explored = best_explored_cells
+                candidate_points_idx[j] = best_point
+                candidate_points_angle[j] = best_angle
+                matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
+                if len(matching_indices) > 0:
+                    candidate_points_xyz[j] = sampled_points_xyz[matching_indices[0]]
+                if best_reward < min_reward:
+                    finished = True
+                    break
+                # Remove the best point from the sampled points
+                sampled_points_idx = np.delete(sampled_points_idx, np.where(sampled_points_idx == best_point), axis=0)
+                sampled_points_xyz = np.delete(sampled_points_xyz, np.where(sampled_points_idx == best_point), axis=0)
+                print("Number of points chosen:", j)
+        # Remove NaN values from candidate points
+        valid_mask = ~np.isnan(candidate_points_idx[:, 0])
+        candidate_points_idx = candidate_points_idx[valid_mask]
+        candidate_points_angle = candidate_points_angle[valid_mask]
+        candidate_points_xyz = candidate_points_xyz[valid_mask]
+        return candidate_points_idx, candidate_points_angle, candidate_points_xyz
+
+
+
+
+
+    def BestAnglewithReward(self, point_index): 
         """
-        Perform Next Best View (NBV) to achieve coverage path planning.
-    
+        Calculate the best angle for a given point index based on the number of unseen cells in its neighborhood.
         Args:
-            trav (np.ndarray): The travel cost map.
-            sensor_range (int): The radius of the sensor range.
-            coverage_threshold (float): The percentage of grid cells to cover (default: 90%).
-            num_samples (int): The number of candidate points to sample.
-    
+            point_index (tuple): The index of the point in the grid (slice, x, y).
         Returns:
-            list: List of selected points for coverage.
+            best_angle (float): The best angle in degrees
+            reward (int): The reward for the best angle
+            Explored_cells (np.ndarray): The explored cells for the best angle
         """
-        # Initialize the seen cells grid
-        seen_cells = np.zeros_like(trav, dtype=bool)
-        total_cells = np.prod(trav.shape)
-        target_coverage = coverage_threshold * total_cells
+        base_angles = [0, 90, 180, 270]
+        rewards = np.zeros(len(base_angles), dtype=np.int32)
+        Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
+        for i, base_angle in enumerate(base_angles):
+            angles = np.deg2rad(np.linspace(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, num=400))
+            Explored_cells[i] = self.explored.copy()
+            for angle in angles:
+                # Calculate the coordinates of the sensor range
+                x_min = point_index[1]
+                x_max = point_index[1] + math.floor(self.sensor_range * np.cos(angle) / self.resolution)
+                y_min = point_index[2]
+                y_max = point_index[2] + math.floor(self.sensor_range * np.sin(angle) / self.resolution)
+
+                # Determine the step direction for x and y
+                x_step = 1 if x_max >= x_min else -1
+                y_step = 1 if y_max >= y_min else -1
+
+                for i_x in range(x_min, x_max + x_step, x_step): 
+                    stop = False
+                    for i_y in range(y_min, y_max + y_step, y_step): 
+                        if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
+                            if Explored_cells[i, point_index[0], i_x, i_y] == 0:
+                                rewards[i] += 1
+                                Explored_cells[i, point_index[0], i_x, i_y] = 1
+                            if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:    # Stop if a barrier is hit
+                                rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
+                                stop = True
+                                break  
+                    if stop:
+                        break
+
+        # Determine the best angle
+        best_angle_index = np.argmax(rewards)
+        best_angle = base_angles[best_angle_index]
+        
+        return best_angle, rewards[best_angle_index], Explored_cells[best_angle_index]
     
-        selected_points = []
+    # def nextBestView(self, trav, sensor_range, coverage_threshold=0.95, num_samples=100):
+    #     """
+    #     Perform Next Best View (NBV) to achieve coverage path planning.
     
-        while np.sum(seen_cells) < target_coverage:
-            # Sample candidate points
-            sampled_points = self.sampleTraversablePoints(trav, num_samples)
+    #     Args:
+    #         trav (np.ndarray): The travel cost map.
+    #         sensor_range (int): The radius of the sensor range.
+    #         coverage_threshold (float): The percentage of grid cells to cover (default: 90%).
+    #         num_samples (int): The number of candidate points to sample.
     
-            # Calculate rewards for each sampled point
-            rewards = self.calculateRewards(sampled_points, seen_cells, trav, sensor_range)
+    #     Returns:
+    #         list: List of selected points for coverage.
+    #     """
+    #     # Initialize the seen cells grid
+    #     seen_cells = np.zeros_like(trav, dtype=bool)
+    #     total_cells = np.prod(trav.shape)
+    #     target_coverage = coverage_threshold * total_cells
     
-            # Choose the point with the highest reward
-            best_idx = np.argmax(rewards)
-            best_point = sampled_points[best_idx]
-            selected_points.append(best_point)
+    #     selected_points = []
     
-            # Update seen cells
-            x, y = best_point
-            x_min = max(0, x - sensor_range)
-            x_max = min(trav.shape[0], x + sensor_range + 1)
-            y_min = max(0, y - sensor_range)
-            y_max = min(trav.shape[1], y + sensor_range + 1)
-            seen_cells[x_min:x_max, y_min:y_max] = True  # Mark cells as seen
+    #     while np.sum(seen_cells) < target_coverage:
+    #         # Sample candidate points
+    #         sampled_points = self.sampleTraversablePoints(trav, num_samples)
     
-            # Log progress
-            rospy.loginfo("Selected point: %s, Coverage: %.2f%%", best_point, (np.sum(seen_cells) / total_cells) * 100)
+    #         # Calculate rewards for each sampled point
+    #         rewards = self.calculateRewards(sampled_points, seen_cells, trav, sensor_range)
     
-        return selected_points
+    #         # Choose the point with the highest reward
+    #         best_idx = np.argmax(rewards)
+    #         best_point = sampled_points[best_idx]
+    #         selected_points.append(best_point)
+    
+    #         # Update seen cells
+    #         x, y = best_point
+    #         x_min = max(0, x - sensor_range)
+    #         x_max = min(trav.shape[0], x + sensor_range + 1)
+    #         y_min = max(0, y - sensor_range)
+    #         y_max = min(trav.shape[1], y + sensor_range + 1)
+    #         seen_cells[x_min:x_max, y_min:y_max] = True  # Mark cells as seen
+    
+    #         # Log progress
+    #         rospy.loginfo("Selected point: %s, Coverage: %.2f%%", best_point, (np.sum(seen_cells) / total_cells) * 100)
+    
+    #     return selected_points
     

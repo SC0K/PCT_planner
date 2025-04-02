@@ -45,12 +45,13 @@ def pct_plan():
         path_pub.publish(traj2ros(traj_3d))
         print("Trajectory published")
 
-    sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
+    # sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
+    candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
 
     # Publish sampled points
-    publish_sampled_points(sampled_points_xyz)
+    publish_points(candidate_points_xyz)
 
-def publish_sampled_points(sampled_points_xyz, frame_id="map"):
+def publish_points(points_xyz, frame_id="map"):
     """
     Publish sampled points as a PointCloud2 message.
 
@@ -80,7 +81,7 @@ def publish_sampled_points(sampled_points_xyz, frame_id="map"):
         PointField("z", 8, PointField.FLOAT32, 1),
     ]
 
-    point_cloud_msg = pc2.create_cloud(header, fields, sampled_points_xyz)
+    point_cloud_msg = pc2.create_cloud(header, fields, points_xyz)
 
     # Publish the message
     sampled_points_pub.publish(point_cloud_msg)
