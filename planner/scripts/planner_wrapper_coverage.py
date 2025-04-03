@@ -314,7 +314,7 @@ class TomogramCoveragePlanner(object):
     
         # Initialize rewards and explored cells
         rewards = cp.zeros((num_points, num_angles), dtype=cp.int32)
-        Explored_cells = cp.array(self.explored, dtype=cp.float32)
+        Explored_cells = cp.tile(cp.array(self.explored, dtype=cp.float32)[cp.newaxis, :, :, :], (num_points, 1, 1, 1))
     
         # Precompute angles for all base angles
         angles = cp.deg2rad(cp.arange(-self.sensor_fov / 2, self.sensor_fov / 2, step=2))
@@ -325,53 +325,40 @@ class TomogramCoveragePlanner(object):
         cos_angles = cp.cos(all_angles)
         sin_angles = cp.sin(all_angles)
     
-        # Compute x_min, x_max, y_min, y_max for all points and angles
-        x_min = points_idx[:, 1:2]
-        y_min = points_idx[:, 2:3]
-        x_max = x_min + cp.floor(self.sensor_range * cos_angles / self.resolution).astype(cp.int32)
-        y_max = y_min + cp.floor(self.sensor_range * sin_angles / self.resolution).astype(cp.int32)
-    
-        # Determine step directions
-        x_step = cp.where(x_max >= x_min, 1, -1)
-        y_step = cp.where(y_max >= y_min, 1, -1)
-    
-        # Generate indices for all points and angles
-        x_indices = cp.arange(x_min.min().item(), x_max.max().item() + 1, 1)  # Convert to scalars
-        y_indices = cp.arange(y_min.min().item(), y_max.max().item() + 1, 1)  # Convert to scalars
-    
-        # Create meshgrid for all indices
-        x_mesh, y_mesh = cp.meshgrid(x_indices, y_indices, indexing="ij")
-    
-        # Flatten x_mesh and y_mesh for advanced indexing
-        x_flat = x_mesh.flatten()
-        y_flat = y_mesh.flatten()
-    
-        # Check for barriers and update rewards
+        # Process each point and angle
         for i, angle in enumerate(base_angles):
             for s in range(points_idx.shape[0]):
                 # Extract the slice index
                 slice_idx = points_idx[s, 0]
     
-                # Use advanced indexing to create the valid_mask for the current slice
-                valid_mask = trav_gpu[slice_idx, y_flat, x_flat] != self.cost_barrier
+                # Compute the sensor range for the current point and angle
+                x_min = points_idx[s, 1]
+                y_min = points_idx[s, 2]
+                x_max = x_min + int(self.sensor_range * cos_angles[i] / self.resolution)
+                y_max = y_min + int(self.sensor_range * sin_angles[i] / self.resolution)
     
-                # Filter valid indices
-                x_valid = x_flat[valid_mask]
-                y_valid = y_flat[valid_mask]
+                # Clip indices to stay within bounds
+                x_min = max(0, x_min)
+                y_min = max(0, y_min)
+                x_max = min(self.trav.shape[1] - 1, x_max)
+                y_max = min(self.trav.shape[2] - 1, y_max)
     
-                # Create a meshgrid for valid indices
-                x_mesh, y_mesh = cp.meshgrid(x_valid, y_valid, indexing="ij")
+                # Create a boolean mask for valid cells
+                valid_mask = (trav_gpu[slice_idx, x_min:x_max + 1, y_min:y_max + 1] != self.cost_barrier)
     
-                # Update rewards and explored cells
-                rewards[s, i] += cp.sum(Explored_cells[slice_idx, x_mesh, y_mesh] == 0)
-                Explored_cells[slice_idx, x_mesh, y_mesh] = 1
+                # Count unexplored cells and update rewards
+                unexplored_mask = (Explored_cells[s, slice_idx, x_min:x_max + 1, y_min:y_max + 1] == 0) & valid_mask
+                rewards[s, i] += cp.sum(unexplored_mask)
+    
+                # Mark cells as explored
+                Explored_cells[s, slice_idx, x_min:x_max + 1, y_min:y_max + 1][unexplored_mask] = 1
     
         # Determine the best angle for each point
         best_angle_indices = cp.argmax(rewards, axis=1)
         best_angles = base_angles[best_angle_indices]
         best_rewards = rewards[cp.arange(num_points), best_angle_indices]
     
-        return best_angles.get(), best_rewards.get(), Explored_cells.get()
+        return best_angles.get(), best_rewards.get(), Explored_cells
     
 
     # def BestAnglewithReward(self, point_index): 
