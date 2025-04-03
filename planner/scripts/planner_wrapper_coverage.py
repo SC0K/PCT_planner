@@ -53,7 +53,7 @@ class TomogramCoveragePlanner(object):
             self.slice_dh = float(data_dict['slice_dh'])
             self.map_dim = [tomogram.shape[2], tomogram.shape[3]]
             self.offset = np.array([int(self.map_dim[0] / 2), int(self.map_dim[1] / 2)], dtype=np.int32)
-            self.sensor_range = int(round(self.cfg.sensor.sensor_range / self.resolution))
+            # self.sensor_range = int(round(self.cfg.sensor.sensor_range / self.resolution))
 
 
         self.trav = tomogram[0]
@@ -243,7 +243,7 @@ class TomogramCoveragePlanner(object):
             if np.sum(self.explored) < self.cfg.planner.coverage_threshold * target_num: 
                 best_reward = -1               
                 ## Loop to find the next best point
-                print("percent of coverage:", np.sum(self.explored) / target_num)
+                # print("percent of coverage:", np.sum(self.explored) / target_num)
                 for i, point_index in enumerate(sampled_points_idx):
                     angle, reward, explored_cells = self.BestAnglewithReward(point_index)
                     if reward > best_reward:
@@ -272,7 +272,6 @@ class TomogramCoveragePlanner(object):
                     sampled_points_xyz = np.delete(sampled_points_xyz, matching_indices[0], axis=0)
                 else:
                     print("Warning: Best point not found in sampled_points_idx. Skipping deletion.")
-                print("Number of points chosen:", j)
     
         # Remove NaN values from candidate points
         valid_mask = ~np.isnan(candidate_points_idx).any(axis=1)
@@ -299,7 +298,8 @@ class TomogramCoveragePlanner(object):
         rewards = np.zeros(len(base_angles), dtype=np.int32)
         Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
         for i, base_angle in enumerate(base_angles):
-            angles = np.deg2rad(np.linspace(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, num=400))
+            # Calculate angles with 2-degree steps
+            angles = np.deg2rad(np.arange(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, step=2))
             Explored_cells[i] = self.explored.copy()
             for angle in angles:
                 # Calculate the coordinates of the sensor range
@@ -307,7 +307,6 @@ class TomogramCoveragePlanner(object):
                 x_max = point_index[1] + math.floor(self.sensor_range * np.cos(angle) / self.resolution)
                 y_min = point_index[2]
                 y_max = point_index[2] + math.floor(self.sensor_range * np.sin(angle) / self.resolution)
-
                 # Determine the step direction for x and y
                 x_step = 1 if x_max >= x_min else -1
                 y_step = 1 if y_max >= y_min else -1
@@ -320,7 +319,7 @@ class TomogramCoveragePlanner(object):
                                 rewards[i] += 1
                                 Explored_cells[i, point_index[0], i_x, i_y] = 1
                             if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:    # Stop if a barrier is hit
-                                rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
+                                # rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
                                 stop = True
                                 break  
                     if stop:
