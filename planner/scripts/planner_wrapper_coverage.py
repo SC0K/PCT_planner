@@ -3,6 +3,7 @@ import sys
 import pickle
 import numpy as np
 import math
+import cupy as cp
 
 from utils import *
 
@@ -222,142 +223,224 @@ class TomogramCoveragePlanner(object):
     
     def nextBestView(self):
         """
-        Calculate the reward for each sampled point based on the number of unseen cells in its neighborhood.
-    
+        Iteratively select the best points based on rewards, update the explored region, 
+        and stop when either all sampled points are selected or 90% of the explorable points are explored.
+        
         Returns:
-            np.ndarray: Array of rewards for each sampled point.
+            list: List of selected points (indices).
+            list: List of corresponding angles for each selected point.
+            list: List of map coordinates for each selected point.
         """
         min_reward = 10
-        finished = False
-        sampled_points_idx, sampled_points_xyz= self.sampleTraversablePoints(num_samples=self.cfg.planner.sample_num)
-        best_point = None
-        best_angle = None
-        best_explored_cells = self.explored.copy()
-        candidate_points_idx = np.full(sampled_points_idx.shape, np.nan, dtype=np.float32)
-        candidate_points_angle = np.full(sampled_points_idx.shape[0], np.nan, dtype=np.float32)
-        candidate_points_xyz = np.full(sampled_points_xyz.shape, np.nan, dtype=np.float32)
-        target_num = np.count_nonzero(~np.isnan(self.explored))
-        for j in range(candidate_points_idx.shape[0]):
-            if finished == True:
-                    break
-            if np.sum(self.explored) < self.cfg.planner.coverage_threshold * target_num: 
-                best_reward = -1               
-                ## Loop to find the next best point
-                # print("percent of coverage:", np.sum(self.explored) / target_num)
-                for i, point_index in enumerate(sampled_points_idx):
-                    angle, reward, explored_cells = self.BestAnglewithReward(point_index)
-                    if reward > best_reward:
-                        best_reward = reward
-                        best_point = point_index
-                        best_angle = angle
-                        best_explored_cells = explored_cells
-                # Update the explored graph with the best angle
-                self.explored = best_explored_cells
-                candidate_points_idx[j] = best_point
-                candidate_points_angle[j] = best_angle
-                matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
-                if len(matching_indices) > 0:
-                    candidate_points_xyz[j] = sampled_points_xyz[matching_indices[0]]
-                    print("Best reward:", best_reward)
-                if best_reward < min_reward:
-                    finished = True
-                    break
-                # Remove the best point from the sampled points
-                                # Find the matching row index for best_point
-                matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
-                
-                # Check if a match is found before attempting to delete
-                if len(matching_indices) > 0:
-                    sampled_points_idx = np.delete(sampled_points_idx, matching_indices[0], axis=0)
-                    sampled_points_xyz = np.delete(sampled_points_xyz, matching_indices[0], axis=0)
-                else:
-                    print("Warning: Best point not found in sampled_points_idx. Skipping deletion.")
-    
-        # Remove NaN values from candidate points
-        assert candidate_points_idx.shape[0] == candidate_points_angle.shape[0] == candidate_points_xyz.shape[0], \
-            "Mismatch in the number of rows between candidate arrays."
+        selected_points = []
+        selected_angles = []
+        selected_points_xyz = []
         
-        # Remove rows where any column contains NaN
-        valid_mask = ~np.isnan(candidate_points_idx).any(axis=1)
-        if np.any(valid_mask):  # Only apply the mask if there are valid rows
-            candidate_points_idx = candidate_points_idx[valid_mask]
-            candidate_points_angle = candidate_points_angle[valid_mask]
-            candidate_points_xyz = candidate_points_xyz[valid_mask]
-        else:
-            print("All candidate points contain NaN values.")
-        return candidate_points_idx, candidate_points_angle, candidate_points_xyz
+        # Convert self.explored to a CuPy array
+        explored_cp = cp.array(self.explored)
+        
+        # Calculate the total number of explorable points
+        total_explorable_points = cp.sum(~cp.isnan(explored_cp))
+        explored_points = cp.sum(explored_cp == 1)
+        
+        # Sample traversable points once
+        sampled_points_idx, sampled_points_xyz = self.sampleTraversablePoints(num_samples=self.cfg.planner.sample_num)
+        
+        while explored_points / total_explorable_points < 0.9 and len(sampled_points_idx) > 0:
+            # Calculate rewards for all sampled points
+            angles, rewards, explored_cells = self.BestAnglewithReward(sampled_points_idx)
+            
+            # Ensure rewards is a CuPy array
+            rewards_cp = cp.array(rewards)
+            
+            # Find the best point and angle
+            best_reward_idx = cp.argmax(rewards_cp).get()  # Convert to NumPy scalar
+            best_reward = rewards_cp[best_reward_idx]
+            
+            # Stop if no point meets the minimum reward threshold
+            if best_reward < min_reward:
+                break
+            
+            best_point = sampled_points_idx[best_reward_idx]
+            best_angle = angles[best_reward_idx]
+            best_point_xyz = sampled_points_xyz[best_reward_idx]
+            
+            # Update the explored graph with the best explored cells
+            self.explored = explored_cells[best_reward_idx]
+            
+            # Add the selected point, angle, and coordinates to the results
+            selected_points.append(best_point)
+            selected_angles.append(best_angle)
+            selected_points_xyz.append(best_point_xyz)
+            
+            # Update the count of explored points
+            explored_cp = cp.array(self.explored)  # Reconvert to CuPy after updating
+            explored_points = cp.sum(explored_cp == 1)
+            
+            # Remove the selected point from the sampled points
+            sampled_points_idx = np.delete(sampled_points_idx, best_reward_idx, axis=0)
+            sampled_points_xyz = np.delete(sampled_points_xyz, best_reward_idx, axis=0)
+            
+            # Optionally, remove the selected point from the graph
+            self.trav[best_point[0], best_point[1], best_point[2]] = self.cost_barrier
+        
+        return selected_points, selected_angles, selected_points_xyz
 
 
 
-
-
-    def BestAnglewithReward(self, point_index): 
+    def BestAnglewithReward(self, points_idx):
         """
-        Calculate the best angle for a given point index based on the number of unseen cells in its neighborhood.
+        Calculate the best angle for all given points based on the number of unseen cells in their neighborhoods.
         Args:
-            point_index (tuple): The index of the point in the grid (slice, x, y).
+            points_idx (np.ndarray): Array of point indices in the grid (N, 3), where N is the number of points.
         Returns:
-            best_angle (float): The best angle in degrees
-            reward (int): The reward for the best angle
-            Explored_cells (np.ndarray): The explored cells for the best angle
+            np.ndarray: Best angles for all points (N,).
+            np.ndarray: Rewards for the best angles (N,).
+            np.ndarray: Updated explored cells for all points (N, ...).
         """
-        base_angles = [0, 90, 180, 270]
-        rewards = np.zeros(len(base_angles), dtype=np.int32)
-        Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
-        for i, base_angle in enumerate(base_angles):
-            # Calculate angles with 2-degree steps
-            angles = np.deg2rad(np.arange(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, step=2))
-            Explored_cells[i] = self.explored.copy()
-            for angle in angles:
-                # Calculate the coordinates of the sensor range
-                x_min = point_index[1]
-                x_max = point_index[1] + math.floor(self.sensor_range * np.cos(angle) / self.resolution)
-                y_min = point_index[2]
-                y_max = point_index[2] + math.floor(self.sensor_range * np.sin(angle) / self.resolution)
-                # Determine the step direction for x and y
-                x_step = 1 if x_max >= x_min else -1
-                y_step = 1 if y_max >= y_min else -1
-
-                # for i_x in range(x_min, x_max + x_step, x_step): 
-                #     stop = False
-                #     for i_y in range(y_min, y_max + y_step, y_step): 
-                #         if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
-                #             if Explored_cells[i, point_index[0], i_x, i_y] == 0:
-                #                 rewards[i] += 1
-                #                 Explored_cells[i, point_index[0], i_x, i_y] = 1
-                #             if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:    # Stop if a barrier is hit
-                #                 # rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
-                #                 stop = True
-                #                 break  
-                #     if stop:
-                #         break
-
-                x_indices = np.arange(x_min, x_max + x_step, x_step)
-                y_indices = np.arange(y_min, y_max + y_step, y_step)
-
-                # Apply bounds check independently for x_indices and y_indices
-                x_valid_mask = (0 <= x_indices) & (x_indices < self.map_dim[0])
-                y_valid_mask = (0 <= y_indices) & (y_indices < self.map_dim[1])
-
+        # Ensure points_idx is 2D
+        if points_idx.ndim == 1:
+            points_idx = points_idx.reshape(1, -1)  # Reshape to (1, 3) for a single point
+    
+        # Convert points_idx to CuPy array
+        points_idx = cp.array(points_idx)
+    
+        # Convert self.trav to CuPy array
+        trav_gpu = cp.array(self.trav)
+    
+        base_angles = cp.array([0, 90, 180, 270])
+        num_points = points_idx.shape[0]
+        num_angles = len(base_angles)
+    
+        # Initialize rewards and explored cells
+        rewards = cp.zeros((num_points, num_angles), dtype=cp.int32)
+        Explored_cells = cp.array(self.explored, dtype=cp.float32)
+    
+        # Precompute angles for all base angles
+        angles = cp.deg2rad(cp.arange(-self.sensor_fov / 2, self.sensor_fov / 2, step=2))
+        all_angles = angles[cp.newaxis, :] + cp.deg2rad(base_angles[:, cp.newaxis])
+        all_angles = all_angles.flatten()
+    
+        # Precompute sensor ranges
+        cos_angles = cp.cos(all_angles)
+        sin_angles = cp.sin(all_angles)
+    
+        # Compute x_min, x_max, y_min, y_max for all points and angles
+        x_min = points_idx[:, 1:2]
+        y_min = points_idx[:, 2:3]
+        x_max = x_min + cp.floor(self.sensor_range * cos_angles / self.resolution).astype(cp.int32)
+        y_max = y_min + cp.floor(self.sensor_range * sin_angles / self.resolution).astype(cp.int32)
+    
+        # Determine step directions
+        x_step = cp.where(x_max >= x_min, 1, -1)
+        y_step = cp.where(y_max >= y_min, 1, -1)
+    
+        # Generate indices for all points and angles
+        x_indices = cp.arange(x_min.min().item(), x_max.max().item() + 1, 1)  # Convert to scalars
+        y_indices = cp.arange(y_min.min().item(), y_max.max().item() + 1, 1)  # Convert to scalars
+    
+        # Create meshgrid for all indices
+        x_mesh, y_mesh = cp.meshgrid(x_indices, y_indices, indexing="ij")
+    
+        # Flatten x_mesh and y_mesh for advanced indexing
+        x_flat = x_mesh.flatten()
+        y_flat = y_mesh.flatten()
+    
+        # Check for barriers and update rewards
+        for i, angle in enumerate(base_angles):
+            for s in range(points_idx.shape[0]):
+                # Extract the slice index
+                slice_idx = points_idx[s, 0]
+    
+                # Use advanced indexing to create the valid_mask for the current slice
+                valid_mask = trav_gpu[slice_idx, y_flat, x_flat] != self.cost_barrier
+    
                 # Filter valid indices
-                x_indices = x_indices[x_valid_mask]
-                y_indices = y_indices[y_valid_mask]
+                x_valid = x_flat[valid_mask]
+                y_valid = y_flat[valid_mask]
+    
+                # Create a meshgrid for valid indices
+                x_mesh, y_mesh = cp.meshgrid(x_valid, y_valid, indexing="ij")
+    
+                # Update rewards and explored cells
+                rewards[s, i] += cp.sum(Explored_cells[slice_idx, x_mesh, y_mesh] == 0)
+                Explored_cells[slice_idx, x_mesh, y_mesh] = 1
+    
+        # Determine the best angle for each point
+        best_angle_indices = cp.argmax(rewards, axis=1)
+        best_angles = base_angles[best_angle_indices]
+        best_rewards = rewards[cp.arange(num_points), best_angle_indices]
+    
+        return best_angles.get(), best_rewards.get(), Explored_cells.get()
+    
 
-                # Create a meshgrid of x_indices and y_indices
-                x_mesh, y_mesh = np.meshgrid(x_indices, y_indices, indexing='ij')
+    # def BestAnglewithReward(self, point_index): 
+    #     """
+    #     Calculate the best angle for a given point index based on the number of unseen cells in its neighborhood.
+    #     Args:
+    #         point_index (tuple): The index of the point in the grid (slice, x, y).
+    #     Returns:
+    #         best_angle (float): The best angle in degrees
+    #         reward (int): The reward for the best angle
+    #         Explored_cells (np.ndarray): The explored cells for the best angle
+    #     """
+    #     base_angles = [0, 90, 180, 270]
+    #     rewards = np.zeros(len(base_angles), dtype=np.int32)
+    #     Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
+    #     for i, base_angle in enumerate(base_angles):
+    #         # Calculate angles with 2-degree steps
+    #         angles = np.deg2rad(np.arange(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, step=2))
+    #         Explored_cells[i] = self.explored.copy()
+    #         for angle in angles:
+    #             # Calculate the coordinates of the sensor range
+    #             x_min = point_index[1]
+    #             x_max = point_index[1] + math.floor(self.sensor_range * np.cos(angle) / self.resolution)
+    #             y_min = point_index[2]
+    #             y_max = point_index[2] + math.floor(self.sensor_range * np.sin(angle) / self.resolution)
+    #             # Determine the step direction for x and y
+    #             x_step = 1 if x_max >= x_min else -1
+    #             y_step = 1 if y_max >= y_min else -1
 
-                # Iterate through the meshgrid and stop if a barrier is encountered
-                for i_x, i_y in zip(x_mesh.flatten(), y_mesh.flatten()):
-                    if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
-                        break  # Exit the loop when a barrier is encountered
-                    if Explored_cells[i, point_index[0], i_x, i_y] == 0:
-                        rewards[i] += 1
-                        Explored_cells[i, point_index[0], i_x, i_y] = 1
+    #             # for i_x in range(x_min, x_max + x_step, x_step): 
+    #             #     stop = False
+    #             #     for i_y in range(y_min, y_max + y_step, y_step): 
+    #             #         if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
+    #             #             if Explored_cells[i, point_index[0], i_x, i_y] == 0:
+    #             #                 rewards[i] += 1
+    #             #                 Explored_cells[i, point_index[0], i_x, i_y] = 1
+    #             #             if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:    # Stop if a barrier is hit
+    #             #                 # rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
+    #             #                 stop = True
+    #             #                 break  
+    #             #     if stop:
+    #             #         break
+
+    #             x_indices = np.arange(x_min, x_max + x_step, x_step)
+    #             y_indices = np.arange(y_min, y_max + y_step, y_step)
+
+    #             # Apply bounds check independently for x_indices and y_indices
+    #             x_valid_mask = (0 <= x_indices) & (x_indices < self.map_dim[0])
+    #             y_valid_mask = (0 <= y_indices) & (y_indices < self.map_dim[1])
+
+    #             # Filter valid indices
+    #             x_indices = x_indices[x_valid_mask]
+    #             y_indices = y_indices[y_valid_mask]
+
+    #             # Create a meshgrid of x_indices and y_indices
+    #             x_mesh, y_mesh = np.meshgrid(x_indices, y_indices, indexing='ij')
+
+    #             # Iterate through the meshgrid and stop if a barrier is encountered
+    #             for i_x, i_y in zip(x_mesh.flatten(), y_mesh.flatten()):
+    #                 if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
+    #                     break  # Exit the loop when a barrier is encountered
+    #                 if Explored_cells[i, point_index[0], i_x, i_y] == 0:
+    #                     rewards[i] += 1
+    #                     Explored_cells[i, point_index[0], i_x, i_y] = 1
 
                
-        # Determine the best angle
-        best_angle_index = np.argmax(rewards)
-        best_angle = base_angles[best_angle_index]
+    #     # Determine the best angle
+    #     best_angle_index = np.argmax(rewards)
+    #     best_angle = base_angles[best_angle_index]
         
-        return best_angle, rewards[best_angle_index], Explored_cells[best_angle_index]
+    #     return best_angle, rewards[best_angle_index], Explored_cells[best_angle_index]
 

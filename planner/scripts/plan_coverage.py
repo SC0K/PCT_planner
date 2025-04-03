@@ -50,7 +50,7 @@ def pct_plan():
     print("Candidate points:", candidate_points_xyz)
 
     # Publish sampled points
-    publish_points(candidate_points_xyz)
+    # publish_points(candidate_points_xyz)
 
 def publish_points(points_xyz, frame_id="map"):
     """
