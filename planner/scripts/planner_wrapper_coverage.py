@@ -274,10 +274,17 @@ class TomogramCoveragePlanner(object):
                     print("Warning: Best point not found in sampled_points_idx. Skipping deletion.")
     
         # Remove NaN values from candidate points
+        assert candidate_points_idx.shape[0] == candidate_points_angle.shape[0] == candidate_points_xyz.shape[0], \
+            "Mismatch in the number of rows between candidate arrays."
+        
+        # Remove rows where any column contains NaN
         valid_mask = ~np.isnan(candidate_points_idx).any(axis=1)
-        candidate_points_idx = candidate_points_idx[valid_mask]
-        candidate_points_angle = candidate_points_angle[valid_mask]
-        candidate_points_xyz = candidate_points_xyz[valid_mask]
+        if np.any(valid_mask):  # Only apply the mask if there are valid rows
+            candidate_points_idx = candidate_points_idx[valid_mask]
+            candidate_points_angle = candidate_points_angle[valid_mask]
+            candidate_points_xyz = candidate_points_xyz[valid_mask]
+        else:
+            print("All candidate points contain NaN values.")
         return candidate_points_idx, candidate_points_angle, candidate_points_xyz
 
 
