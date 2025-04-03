@@ -318,68 +318,46 @@ class TomogramCoveragePlanner(object):
                 x_step = 1 if x_max >= x_min else -1
                 y_step = 1 if y_max >= y_min else -1
 
-                for i_x in range(x_min, x_max + x_step, x_step): 
-                    stop = False
-                    for i_y in range(y_min, y_max + y_step, y_step): 
-                        if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
-                            if Explored_cells[i, point_index[0], i_x, i_y] == 0:
-                                rewards[i] += 1
-                                Explored_cells[i, point_index[0], i_x, i_y] = 1
-                            if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:    # Stop if a barrier is hit
-                                # rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
-                                stop = True
-                                break  
-                    if stop:
-                        break
+                # for i_x in range(x_min, x_max + x_step, x_step): 
+                #     stop = False
+                #     for i_y in range(y_min, y_max + y_step, y_step): 
+                #         if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
+                #             if Explored_cells[i, point_index[0], i_x, i_y] == 0:
+                #                 rewards[i] += 1
+                #                 Explored_cells[i, point_index[0], i_x, i_y] = 1
+                #             if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:    # Stop if a barrier is hit
+                #                 # rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
+                #                 stop = True
+                #                 break  
+                #     if stop:
+                #         break
 
+                x_indices = np.arange(x_min, x_max + x_step, x_step)
+                y_indices = np.arange(y_min, y_max + y_step, y_step)
+
+                # Apply bounds check independently for x_indices and y_indices
+                x_valid_mask = (0 <= x_indices) & (x_indices < self.map_dim[0])
+                y_valid_mask = (0 <= y_indices) & (y_indices < self.map_dim[1])
+
+                # Filter valid indices
+                x_indices = x_indices[x_valid_mask]
+                y_indices = y_indices[y_valid_mask]
+
+                # Create a meshgrid of x_indices and y_indices
+                x_mesh, y_mesh = np.meshgrid(x_indices, y_indices, indexing='ij')
+
+                # Iterate through the meshgrid and stop if a barrier is encountered
+                for i_x, i_y in zip(x_mesh.flatten(), y_mesh.flatten()):
+                    if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
+                        break  # Exit the loop when a barrier is encountered
+                    if Explored_cells[i, point_index[0], i_x, i_y] == 0:
+                        rewards[i] += 1
+                        Explored_cells[i, point_index[0], i_x, i_y] = 1
+
+               
         # Determine the best angle
         best_angle_index = np.argmax(rewards)
         best_angle = base_angles[best_angle_index]
         
         return best_angle, rewards[best_angle_index], Explored_cells[best_angle_index]
-    
-    # def nextBestView(self, trav, sensor_range, coverage_threshold=0.95, num_samples=100):
-    #     """
-    #     Perform Next Best View (NBV) to achieve coverage path planning.
-    
-    #     Args:
-    #         trav (np.ndarray): The travel cost map.
-    #         sensor_range (int): The radius of the sensor range.
-    #         coverage_threshold (float): The percentage of grid cells to cover (default: 90%).
-    #         num_samples (int): The number of candidate points to sample.
-    
-    #     Returns:
-    #         list: List of selected points for coverage.
-    #     """
-    #     # Initialize the seen cells grid
-    #     seen_cells = np.zeros_like(trav, dtype=bool)
-    #     total_cells = np.prod(trav.shape)
-    #     target_coverage = coverage_threshold * total_cells
-    
-    #     selected_points = []
-    
-    #     while np.sum(seen_cells) < target_coverage:
-    #         # Sample candidate points
-    #         sampled_points = self.sampleTraversablePoints(trav, num_samples)
-    
-    #         # Calculate rewards for each sampled point
-    #         rewards = self.calculateRewards(sampled_points, seen_cells, trav, sensor_range)
-    
-    #         # Choose the point with the highest reward
-    #         best_idx = np.argmax(rewards)
-    #         best_point = sampled_points[best_idx]
-    #         selected_points.append(best_point)
-    
-    #         # Update seen cells
-    #         x, y = best_point
-    #         x_min = max(0, x - sensor_range)
-    #         x_max = min(trav.shape[0], x + sensor_range + 1)
-    #         y_min = max(0, y - sensor_range)
-    #         y_max = min(trav.shape[1], y + sensor_range + 1)
-    #         seen_cells[x_min:x_max, y_min:y_max] = True  # Mark cells as seen
-    
-    #         # Log progress
-    #         rospy.loginfo("Selected point: %s, Coverage: %.2f%%", best_point, (np.sum(seen_cells) / total_cells) * 100)
-    
-    #     return selected_points
-    
+
