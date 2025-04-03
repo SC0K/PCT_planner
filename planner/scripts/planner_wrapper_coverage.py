@@ -164,7 +164,43 @@ class TomogramCoveragePlanner(object):
         idx = np.array([idx[1], idx[0]], dtype=np.float32)
         return idx
     
-    def sampleTraversablePoints(self, num_samples):
+    def sampleUniformPointsInSpace(self):
+        """
+        Sample points that are uniformly distributed in space with a fixed distance equal to the sensor range
+        in the x and y directions, and a smaller fixed step in the vertical (slice) direction.
+    
+        Returns:
+            np.ndarray: Array of valid sampled points (x, y, z indices).
+            np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
+        """
+
+        step_x = max(1, int(self.sensor_range/1.5 / self.resolution))  # Step size in the x dimension
+        step_y = max(1, int(self.sensor_range/1.5 / self.resolution))  # Step size in the y dimension
+        slice_indices = np.arange(0, self.elev_g.shape[0], 1)
+        x_indices = np.arange(0, self.elev_g.shape[1], step_x)
+        y_indices = np.arange(0, self.elev_g.shape[2], step_y)
+        sampled_indices = np.array(np.meshgrid(slice_indices, x_indices, y_indices, indexing="ij"))
+        sampled_indices = sampled_indices.reshape(3, -1).T  # Reshape to (N, 3)
+    
+        # Filter out invalid or untraversable points
+        valid_indices = []
+        for s, x, y in sampled_indices:
+            if self.trav[s, x, y] < self.cost_barrier and self.elev_g[s, x, y] >= 0:
+                valid_indices.append([s, x, y])
+    
+        valid_indices = np.array(valid_indices)
+    
+        # Convert valid indices to map coordinates
+        sampled_xyz = np.empty((len(valid_indices), 3), dtype=np.float32)
+        for idx, (s, x, y) in enumerate(valid_indices):
+            map_x = (x - self.offset[0]) * self.resolution + self.center[0]
+            map_y = (y - self.offset[1]) * self.resolution + self.center[1]
+            map_z = self.elev_g[s, x, y] + 0.5
+            sampled_xyz[idx] = [map_x, map_y, map_z]
+    
+        return valid_indices, sampled_xyz
+    
+    def sampleTraversablePoints_rad(self, num_samples):
         """
         Sample a uniform set of traversable points from the travel cost map.
     
@@ -229,7 +265,7 @@ class TomogramCoveragePlanner(object):
         """
         min_reward = 10
         finished = False
-        sampled_points_idx, sampled_points_xyz= self.sampleTraversablePoints(num_samples=self.cfg.planner.sample_num)
+        sampled_points_idx, sampled_points_xyz= self.sampleUniformPointsInSpace()
         best_point = None
         best_angle = None
         best_explored_cells = self.explored.copy()

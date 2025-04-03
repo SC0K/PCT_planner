@@ -46,11 +46,13 @@ def pct_plan():
         print("Trajectory published")
 
     # sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
-    candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
-    print("Candidate points:", candidate_points_xyz)
+    sampled_points_idx, sampled_points_xyz = planner.sampleUniformPointsInSpace()
+    # candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
+    # print("Candidate points:", candidate_points_xyz)
 
     # Publish sampled points
-    publish_points(candidate_points_xyz)
+    print("Sampled points:", sampled_points_xyz.shape)
+    publish_points(sampled_points_xyz)
 
 def publish_points(points_xyz, frame_id="map"):
     """
