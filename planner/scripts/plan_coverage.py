@@ -48,25 +48,27 @@ def pct_plan():
     # sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
     # sampled_points_idx, sampled_points_xyz = planner.sampleUniformPointsInSpace()
     # print("Candidate points:", sampled_points_xyz.shape)
+    # publish_points(sampled_points_xyz)
 
     # computeNBVpoints()
 
     # Publish sampled points
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
+    print("Candidate points:", candidate_points_xyz.shape)
 
-    # candidate_points_idx = np.array([[0, 40,  80],[  4, 80, 200]])
-    # candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
-    # candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
-    # candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
+    candidate_points_idx = np.array([[4, 20,  80],[  6, 140, 200]])
+    candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
+    candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
+    candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
 
     publish_points(candidate_points_xyz)
-    # traj_3d = planner.plan(candidate_points_idx[0], candidate_points_idx[1])
-    # if traj_3d is not None:
-    #     path_pub.publish(traj2ros(traj_3d))
-    #     print("Trajectory published")
-    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    print("Adjacency matrix:", adjacency)
+    traj_3d = planner.plan(candidate_points_idx[0], candidate_points_idx[1])
+    if traj_3d is not None:
+        path_pub.publish(traj2ros(traj_3d))
+        print("Trajectory published")
+    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    # print("Adjacency matrix:", adjacency)
 
     
 def computeNBVpoints():

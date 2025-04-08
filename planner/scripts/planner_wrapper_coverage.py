@@ -280,16 +280,18 @@ class TomogramCoveragePlanner(object):
     
         valid_indices = np.array(valid_indices)
     
-        # Filter out points with the same x, y indices and in the same layer with the same mode height
+    # Filter out points with the same x, y indices and the same exact height in the elevation map
         unique_points = []
         seen_xy = {}
         for s, x, y in valid_indices:
             xy_key = (x, y)
-            if xy_key not in seen_xy or seen_xy[xy_key] != self.layer_modes[s]:
+            height = self.elev_g[s, x, y]
+            if xy_key not in seen_xy or seen_xy[xy_key] != height:
                 unique_points.append([s, x, y])
-                seen_xy[xy_key] = self.layer_modes[s]
-    
+                seen_xy[xy_key] = height
+
         unique_indices = np.array(unique_points, dtype=np.int32)
+
     
         # Convert valid indices to map coordinates
         sampled_xyz = np.empty((len(unique_indices), 3), dtype=np.float32)
@@ -431,7 +433,6 @@ class TomogramCoveragePlanner(object):
 
 
 
-
     def BestAnglewithReward(self, point_index): 
         """
         Calculate the best angle for a given point index based on the number of unseen cells in its neighborhood.
@@ -445,9 +446,16 @@ class TomogramCoveragePlanner(object):
         base_angles = [0, 90, 180, 270]
         rewards = np.zeros(len(base_angles), dtype=np.int32)
         Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
+
+        # Get the height of the current point
+        current_height = self.elev_g[point_index[0], point_index[1], point_index[2]]
+
+        # Find all layers with the same height at the same x, y position
+        same_height_layers = np.where(self.elev_g[:, point_index[1], point_index[2]] == current_height)[0]
+
         for i, base_angle in enumerate(base_angles):
             # Calculate angles with 2-degree steps
-            angles = np.deg2rad(np.arange(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, step=2))
+            angles = np.deg2rad(np.arange(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, step=10))
             Explored_cells[i] = self.explored.copy()
             for angle in angles:
                 # Calculate the coordinates of the sensor range
@@ -458,20 +466,6 @@ class TomogramCoveragePlanner(object):
                 # Determine the step direction for x and y
                 x_step = 1 if x_max >= x_min else -1
                 y_step = 1 if y_max >= y_min else -1
-
-                # for i_x in range(x_min, x_max + x_step, x_step): 
-                #     stop = False
-                #     for i_y in range(y_min, y_max + y_step, y_step): 
-                #         if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
-                #             if Explored_cells[i, point_index[0], i_x, i_y] == 0:
-                #                 rewards[i] += 1
-                #                 Explored_cells[i, point_index[0], i_x, i_y] = 1
-                #             if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:    # Stop if a barrier is hit
-                #                 # rewards[i] += 1     # TODO Optional: reward for hitting a barrier is increased
-                #                 stop = True
-                #                 break  
-                #     if stop:
-                #         break
 
                 x_indices = np.arange(x_min, x_max + x_step, x_step)
                 y_indices = np.arange(y_min, y_max + y_step, y_step)
@@ -487,18 +481,18 @@ class TomogramCoveragePlanner(object):
                 # Create a meshgrid of x_indices and y_indices
                 x_mesh, y_mesh = np.meshgrid(x_indices, y_indices, indexing='ij')
 
-                # Iterate through the meshgrid and stop if a barrier is encountered
+                # Iterate through the meshgrid and update all layers with the same height
                 for i_x, i_y in zip(x_mesh.flatten(), y_mesh.flatten()):
-                    if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
-                        rewards[i] += 1
-                        break  # Exit the loop when a barrier is encountered
-                    if Explored_cells[i, point_index[0], i_x, i_y] == 0:
-                        rewards[i] += 1
-                        Explored_cells[i, point_index[0], i_x, i_y] = 1
-                    elif Explored_cells[i, point_index[0], i_x, i_y] == np.nan:
-                        break
+                    for layer in same_height_layers:  # Iterate over layers with the same height
+                        if self.trav[layer, i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
+                            rewards[i] += 1
+                            break  # Exit the loop when a barrier is encountered
+                        if Explored_cells[i, layer, i_x, i_y] == 0:
+                            rewards[i] += 1
+                            Explored_cells[i, layer, i_x, i_y] = 1
+                        elif np.isnan(Explored_cells[i, layer, i_x, i_y]):
+                            break
 
-               
         # Determine the best angle
         best_angle_index = np.argmax(rewards)
         best_angle = base_angles[best_angle_index]
