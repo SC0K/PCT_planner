@@ -25,8 +25,8 @@ if args.scene == 'Spiral':
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
     tomo_file = 'building2_9'
-    start_pos = np.array([5.0, 5.0], dtype=np.float32)
-    end_pos = np.array([-6.0, -1.0], dtype=np.float32)
+    start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
+    end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
 else:
     tomo_file = 'plaza3_10'
     start_pos = np.array([0.0, 0.0], dtype=np.float32)
@@ -40,19 +40,73 @@ sampled_points_pub = rospy.Publisher("/sampled_points", PointCloud2, latch=True,
 def pct_plan():
     planner.loadTomogram(tomo_file)
 
-    traj_3d = planner.plan(start_pos, end_pos)
-    if traj_3d is not None:
-        path_pub.publish(traj2ros(traj_3d))
-        print("Trajectory published")
+    # traj_3d = planner.plan(start_pos, end_pos)
+    # if traj_3d is not None:
+    #     path_pub.publish(traj2ros(traj_3d))
+    #     print("Trajectory published")
 
     # sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
-    sampled_points_idx, sampled_points_xyz = planner.sampleUniformPointsInSpace()
-    # candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
-    # print("Candidate points:", candidate_points_xyz)
+    # sampled_points_idx, sampled_points_xyz = planner.sampleUniformPointsInSpace()
+    # print("Candidate points:", sampled_points_xyz.shape)
+
+    # computeNBVpoints()
 
     # Publish sampled points
-    print("Sampled points:", sampled_points_xyz.shape)
-    publish_points(sampled_points_xyz)
+    candidate_points_xyz = np.load("sampled_points.npy")
+    candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
+
+    # candidate_points_idx = np.array([[0, 40,  80],[  4, 80, 200]])
+    # candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
+    # candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
+    # candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
+
+    publish_points(candidate_points_xyz)
+    # traj_3d = planner.plan(candidate_points_idx[0], candidate_points_idx[1])
+    # if traj_3d is not None:
+    #     path_pub.publish(traj2ros(traj_3d))
+    #     print("Trajectory published")
+    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    print("Adjacency matrix:", adjacency)
+
+    
+def computeNBVpoints():
+    # Compute the next best view points
+    candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
+    print("Candidate points:", candidate_points_xyz)
+    np.save("sampled_points.npy", candidate_points_xyz)
+    np.save("sampled_points_idx.npy", candidate_points_idx)
+    np.save("sampled_points_angles.npy", candidate_angles)
+
+    # Publish sampled points
+    candidate_points_idx = candidate_points_idx[:, [0, 2, 1]].astype(np.int32)  # Switch the order of x and y for planning and ensure integers
+
+    # Filter out points with the same x, y values in layers with the same mode heights
+    unique_points_idx = []
+    unique_points_xyz = []
+    unique_angles = []
+    seen_xy = {}
+
+    for idx, point in enumerate(candidate_points_idx):
+        s, y, x = point
+        xy_key = (x, y)
+        if xy_key not in seen_xy or seen_xy[xy_key] != planner.layer_modes[s]:
+            unique_points_idx.append(point)
+            unique_points_xyz.append(candidate_points_xyz[idx])  # Keep the corresponding xyz map
+            unique_angles.append(candidate_angles[idx])  # Keep the corresponding angle
+            seen_xy[xy_key] = planner.layer_modes[s]
+
+    candidate_points_idx = np.array(unique_points_idx, dtype=np.int32)
+    candidate_points_xyz = np.array(unique_points_xyz, dtype=np.float32)
+    candidate_angles = np.array(unique_angles, dtype=np.float32)
+
+    print("Filtered sampled points (indices):", candidate_points_idx)
+    print("Filtered sampled points (xyz):", candidate_points_xyz)
+    print("Filtered sampled points (angles):", candidate_angles)
+    # Save the sampled points to a file
+    np.save("sampled_points.npy", candidate_points_xyz)
+    np.save("sampled_points_idx.npy", candidate_points_idx)
+    np.save("sampled_points_angles.npy", candidate_angles)
+
 
 def publish_points(points_xyz, frame_id="map"):
     """

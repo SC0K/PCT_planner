@@ -3,7 +3,7 @@ import sys
 import pickle
 import numpy as np
 import math
-
+from scipy.stats import mode
 from utils import *
 
 sys.path.append('../')
@@ -33,12 +33,12 @@ class TomogramCoveragePlanner(object):
         self.end_idx = np.zeros(3, dtype=np.int32)
 
         self.cost_barrier = self.cfg.planner.cost_barrier
-        self.sensor_range = None
         self.elev_g = None
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
         self.sensor_fov = self.cfg.sensor.sensor_fov
+        self.layer_modes = None
 
     def loadTomogram(self, tomo_file):
         with open(self.tomo_dir + tomo_file + '.pickle', 'rb') as handle:
@@ -77,22 +77,21 @@ class TomogramCoveragePlanner(object):
 
         # Initialize the explored graph
         self.explored = self.initExplorationGraph()
+        self.layer_modes = self.compute_layer_modes()
 
     def initExplorationGraph(self):
         """
         Initialize a graph to track whether cells in the elevation grid (elev_g) are explored.
-
+    
         Returns:
-            np.ndarray: A float array where NaN indicates ignored cells, 0.0 indicates unexplored cells, 
+            np.ndarray: A float array where -100 indicates ignored cells, 0.0 indicates unexplored cells, 
                         and 1.0 indicates explored cells.
         """
         # Initialize the exploration graph with NaN values
-        exploration_graph = np.full_like(self.elev_g, np.nan, dtype=np.float32)
-
-        # Set non-NaN cells to 0.0 (unexplored)
-        nan_mask = np.isnan(self.elev_g)
-        exploration_graph[~nan_mask] = 0.0
-
+        exploration_graph = np.full(self.elev_g.shape, np.nan, dtype=np.float32)
+        # Set cells with elev_g != -100 to 0.0 (unexplored)
+        valid_mask = self.elev_g != -100
+        exploration_graph[valid_mask] = 0.0
         return exploration_graph
     
 
@@ -126,15 +125,55 @@ class TomogramCoveragePlanner(object):
             trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
+        # print("Dimention of the elevation map:", self.elev_g.shape)
+        # print("Dimention of the travel cost map:", self.trav.shape)
+    # def plan_TSP(self, sampled_points_idx):
+    def compute_adjacency_matrix(self, sampled_points_idx):
+        """
+        Compute an adjacency matrix where each entry represents the path length between two sampled points.
+    
+        Args:
+            sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3).
+    
+        Returns:
+            np.ndarray: Adjacency matrix of size N x N with path lengths.
+        """
+        num_points = sampled_points_idx.shape[0]
+        adj_matrix = np.full((num_points, num_points), np.inf, dtype=np.float32)  # Initialize with infinity
+    
+        for i in range(num_points):
+            for j in range(i + 1, num_points):  # Only compute for upper triangle (symmetry)
+                # Plan a path between the two points
+                print("Planning path between points:", sampled_points_idx[i], sampled_points_idx[j])
+                self.planner.plan(sampled_points_idx[i], sampled_points_idx[j], True)
+                path_finder: a_star.Astar = self.planner.get_path_finder()
+                path = path_finder.get_result_matrix()
+    
+                if len(path) > 0:  # If a valid path exists
+                    path_length = len(path)  # Use the number of steps as the path length
+                    adj_matrix[i, j] = path_length
+                    adj_matrix[j, i] = path_length  # Symmetry for undirected graph
+    
+        return adj_matrix
+        
 
     def plan(self, start_pos, end_pos):
         # TODO: calculate slice index. By default the start and end pos are all at slice 0
-        self.start_idx[1:] = self.pos2idx(start_pos)
-        self.end_idx[1:] = self.pos2idx(end_pos)
+        # self.start_idx[1:] = self.pos2idx(start_pos)
+        # self.end_idx[1:] = self.pos2idx(end_pos)
+        # self.start_idx[:] = self.pos2idx_3D(start_pos)
+        # self.end_idx[:] = self.pos2idx_3D(end_pos)
+        
+
+        self.start_idx = start_pos.astype(np.int32)
+        self.end_idx = end_pos.astype(np.int32)
+        print("start_idx:", self.start_idx)
+        print("end_idx:", self.end_idx)
 
         self.planner.plan(self.start_idx, self.end_idx, True)
         path_finder: a_star.Astar = self.planner.get_path_finder()
         path = path_finder.get_result_matrix()
+        print("path length:", len(path))
         if len(path) == 0:
             return None
 
@@ -161,21 +200,72 @@ class TomogramCoveragePlanner(object):
     def pos2idx(self, pos):
         pos = pos - self.center
         idx = np.round(pos / self.resolution).astype(np.int32) + self.offset
-        idx = np.array([idx[1], idx[0]], dtype=np.float32)
+        idx = np.array([idx[1], idx[0]], dtype=np.float32) # Swap x and y for grid indexing
         return idx
     
+    def compute_layer_modes(self):
+        """
+        Precompute the mode of valid heights for each layer in the elevation map.
+        Invalid heights (-100) are excluded from the calculation.
+    
+        Returns:
+            np.ndarray: An array of modes for each layer.
+        """
+        layer_modes = []
+        for s in range(self.elev_g.shape[0]):
+            # Flatten the layer and exclude invalid heights (-100)
+            valid_heights = self.elev_g[s][self.elev_g[s] != -100]
+            if len(valid_heights) > 0:
+                # Compute the mode of valid heights
+                layer_mode = mode(valid_heights, nan_policy='omit').mode[0]
+            else:
+                # If no valid heights, set mode to NaN
+                layer_mode = np.nan
+            layer_modes.append(layer_mode)
+        return np.array(layer_modes, dtype=np.float32)
+    
+    def pos2idx_3D(self, pos):
+        """
+        Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
+        
+        Args:
+            pos (np.ndarray): The 3D position (x, y, z).
+        
+        Returns:
+            np.ndarray: The grid indices (s, y, x).
+        """
+        # Subtract the center to align with the grid
+        pos_xy = np.array([pos[0], pos[1]])
+        pos_xy = pos_xy - self.center
+    
+        # Calculate x and y indices
+        idx_xy = np.round(pos_xy[:2] / self.resolution).astype(np.int32) + self.offset
+        idx_xy = np.array([idx_xy[1], idx_xy[0]], dtype=np.float32)  # Swap x and y for grid indexing
+    
+        # Search for the z index (layer number) using the precomputed layer modes
+        z_height = pos[2]  # Extract the z-coordinate
+        z_idx = -1  # Default to -1 if no valid layer is found
+        if z_height > self.layer_modes[-1]:
+            z_idx = self.layer_modes.shape[0] -1    
+        for s, layer_mode in enumerate(self.layer_modes):
+            if not np.isnan(layer_mode) and layer_mode >= z_height:
+                z_idx = s-1
+                break
+    
+        # Combine z_idx with x and y indices
+        idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.float32)
+        return idx
     def sampleUniformPointsInSpace(self):
         """
         Sample points that are uniformly distributed in space with a fixed distance equal to the sensor range
         in the x and y directions, and a smaller fixed step in the vertical (slice) direction.
     
         Returns:
-            np.ndarray: Array of valid sampled points (x, y, z indices).
+            np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-
-        step_x = max(1, int(self.sensor_range/1.5 / self.resolution))  # Step size in the x dimension
-        step_y = max(1, int(self.sensor_range/1.5 / self.resolution))  # Step size in the y dimension
+        step_x = max(1, int(self.sensor_range / self.resolution))  # Step size in the x dimension
+        step_y = max(1, int(self.sensor_range / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -190,15 +280,26 @@ class TomogramCoveragePlanner(object):
     
         valid_indices = np.array(valid_indices)
     
+        # Filter out points with the same x, y indices and in the same layer with the same mode height
+        unique_points = []
+        seen_xy = {}
+        for s, x, y in valid_indices:
+            xy_key = (x, y)
+            if xy_key not in seen_xy or seen_xy[xy_key] != self.layer_modes[s]:
+                unique_points.append([s, x, y])
+                seen_xy[xy_key] = self.layer_modes[s]
+    
+        unique_indices = np.array(unique_points, dtype=np.int32)
+    
         # Convert valid indices to map coordinates
-        sampled_xyz = np.empty((len(valid_indices), 3), dtype=np.float32)
-        for idx, (s, x, y) in enumerate(valid_indices):
+        sampled_xyz = np.empty((len(unique_indices), 3), dtype=np.float32)
+        for idx, (s, x, y) in enumerate(unique_indices):
             map_x = (x - self.offset[0]) * self.resolution + self.center[0]
             map_y = (y - self.offset[1]) * self.resolution + self.center[1]
-            map_z = self.elev_g[s, x, y] + 0.5
+            map_z = self.elev_g[s, x, y]
             sampled_xyz[idx] = [map_x, map_y, map_z]
     
-        return valid_indices, sampled_xyz
+        return unique_indices, sampled_xyz
     
     def sampleTraversablePoints_rad(self, num_samples):
         """
@@ -251,9 +352,9 @@ class TomogramCoveragePlanner(object):
             np.ndarray: The map coordinates (x, y).
         """
         # Convert grid indices to map coordinates
-        map_x = (idx[1] - self.offset[0]) * self.resolution + self.center[0]
-        map_y = (idx[2] - self.offset[1]) * self.resolution + self.center[1]
-        map_z = self.elev_g[idx[0], idx[1], idx[2]]
+        map_y = (idx[1] - self.offset[1]) * self.resolution + self.center[1]
+        map_x = (idx[2] - self.offset[0]) * self.resolution + self.center[0]
+        map_z = self.elev_g[idx[0], idx[2], idx[1]]
         return np.array([map_x, map_y, map_z], dtype=np.float32)
     
     def nextBestView(self):
@@ -276,7 +377,8 @@ class TomogramCoveragePlanner(object):
         for j in range(candidate_points_idx.shape[0]):
             if finished == True:
                     break
-            if np.sum(self.explored) < self.cfg.planner.coverage_threshold * target_num: 
+            print("explored cells:", np.nansum(self.explored))
+            if np.nansum(self.explored) < self.cfg.planner.coverage_threshold * target_num: 
                 best_reward = -1               
                 ## Loop to find the next best point
                 # print("percent of coverage:", np.sum(self.explored) / target_num)
@@ -294,7 +396,7 @@ class TomogramCoveragePlanner(object):
                 matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
                 if len(matching_indices) > 0:
                     candidate_points_xyz[j] = sampled_points_xyz[matching_indices[0]]
-                    print("Best reward:", best_reward)
+                    # print("Best reward:", best_reward)
                 if best_reward < min_reward:
                     finished = True
                     break
@@ -308,6 +410,9 @@ class TomogramCoveragePlanner(object):
                     sampled_points_xyz = np.delete(sampled_points_xyz, matching_indices[0], axis=0)
                 else:
                     print("Warning: Best point not found in sampled_points_idx. Skipping deletion.")
+            else: 
+                break
+            print("percent of coverage:", np.nansum(self.explored) / target_num)
     
         # Remove NaN values from candidate points
         assert candidate_points_idx.shape[0] == candidate_points_angle.shape[0] == candidate_points_xyz.shape[0], \
@@ -385,10 +490,13 @@ class TomogramCoveragePlanner(object):
                 # Iterate through the meshgrid and stop if a barrier is encountered
                 for i_x, i_y in zip(x_mesh.flatten(), y_mesh.flatten()):
                     if self.trav[point_index[0], i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
+                        rewards[i] += 1
                         break  # Exit the loop when a barrier is encountered
                     if Explored_cells[i, point_index[0], i_x, i_y] == 0:
                         rewards[i] += 1
                         Explored_cells[i, point_index[0], i_x, i_y] = 1
+                    elif Explored_cells[i, point_index[0], i_x, i_y] == np.nan:
+                        break
 
                
         # Determine the best angle
