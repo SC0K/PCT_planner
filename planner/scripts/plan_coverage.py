@@ -6,6 +6,7 @@ import rospy
 from nav_msgs.msg import Path
 from sensor_msgs.msg import PointCloud2, PointField
 import sensor_msgs.point_cloud2 as pc2
+from std_msgs.msg import Header
 
 from utils import *
 from planner_wrapper_coverage import TomogramCoveragePlanner
@@ -33,6 +34,7 @@ else:
     end_pos = np.array([23.0, 10.0], dtype=np.float32)
 
 path_pub = rospy.Publisher("/pct_path", Path, latch=True, queue_size=1)
+explored_cells_pub = rospy.Publisher("/explored_cells", PointCloud2, latch=True, queue_size=1)
 planner = TomogramCoveragePlanner(cfg)
 
 sampled_points_pub = rospy.Publisher("/sampled_points", PointCloud2, latch=True, queue_size=1)
@@ -51,35 +53,50 @@ def pct_plan():
     # publish_points(sampled_points_xyz)
 #########################################################
     # computeNBVpoints()
+    
 
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
+    explored_cells = np.load("explored_cells.npy")
     print("Candidate points:", candidate_points_xyz.shape)
 ########################## Test path planning between any two points ##############################
-    candidate_points_idx = np.array([[6, 60,  240],[  2, 40, 220]])
-    candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
-    candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
-    candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
+    # candidate_points_idx = np.array([[6, 60,  240],[  2, 40, 220]])
+    # candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
+    # candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
+    # candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
 
     
-    traj_3d = planner.plan(candidate_points_idx[0], candidate_points_idx[1])
-    if traj_3d is not None:
-        path_pub.publish(traj2ros(traj_3d))
-        print("Trajectory published")
+    # traj_3d = planner.plan(candidate_points_idx[0], candidate_points_idx[1])
+    # if traj_3d is not None:
+    #     path_pub.publish(traj2ros(traj_3d))
+    #     print("Trajectory published")
 ################################################################
     publish_points(candidate_points_xyz)
+######################### Publish explored cells ##############################
+    publish_explored_cells(
+            explored_cells,
+            planner.elev_g,
+            planner.resolution,
+            planner.center,
+            planner.offset
+        )
+################################## Test adjacency matrix computation ##############################
+    # Computation time ~ 60s for 60 points
+    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    print("Adjacency matrix:", adjacency)
+    np.save("adjacency_matrix.npy", adjacency)
 
-    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    # print("Adjacency matrix:", adjacency)
 
     
 def computeNBVpoints():
     # Compute the next best view points
     candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
+    explored_cells = planner.getExploredGraph()
     print("Candidate points:", candidate_points_xyz)
     np.save("sampled_points.npy", candidate_points_xyz)
     np.save("sampled_points_idx.npy", candidate_points_idx)
     np.save("sampled_points_angles.npy", candidate_angles)
+    np.save("explored_cells.npy", explored_cells)
 
     # Publish sampled points
     candidate_points_idx = candidate_points_idx[:, [0, 2, 1]].astype(np.int32)  # Switch the order of x and y for planning and ensure integers
@@ -146,6 +163,41 @@ def publish_points(points_xyz, frame_id="map"):
 
     # Publish the message
     sampled_points_pub.publish(point_cloud_msg)
+
+def publish_explored_cells(explored_cells, elev_g, resolution, center, offset, frame_id="map"):
+    """
+    Publish the explored cells as a PointCloud2 message for visualization in RViz.
+
+    Args:
+        explored_cells (np.ndarray): The explored cells array.
+        elev_g (np.ndarray): The elevation grid.
+        resolution (float): The resolution of the grid.
+        center (np.ndarray): The center of the map.
+        offset (np.ndarray): The offset of the grid.
+        frame_id (str): The frame ID for the PointCloud2 message.
+    """
+    header = Header()
+    header.stamp = rospy.Time.now()
+    header.frame_id = frame_id
+
+    fields = [
+        PointField("x", 0, PointField.FLOAT32, 1),
+        PointField("y", 4, PointField.FLOAT32, 1),
+        PointField("z", 8, PointField.FLOAT32, 1),
+    ]
+
+    points = []
+    for s in range(explored_cells.shape[0]):
+        for x in range(explored_cells.shape[1]):
+            for y in range(explored_cells.shape[2]):
+                if explored_cells[s, x, y] > 0:  # If the cell is explored
+                    map_x = (x - offset[0]) * resolution + center[0]
+                    map_y = (y - offset[1]) * resolution + center[1]
+                    map_z = elev_g[s, x, y]  # Use the elevation as the z-coordinate
+                    points.append([map_x, map_y, map_z])
+
+    point_cloud_msg = pc2.create_cloud(header, fields, points)
+    explored_cells_pub.publish(point_cloud_msg)
 if __name__ == '__main__':
     rospy.init_node("pct_planner", anonymous=True)
 

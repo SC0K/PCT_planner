@@ -417,6 +417,7 @@ class TomogramCoveragePlanner(object):
             else: 
                 break
             print("percent of coverage:", np.nansum(self.explored) / target_num)
+            
     
         # Remove NaN values from candidate points
         assert candidate_points_idx.shape[0] == candidate_points_angle.shape[0] == candidate_points_xyz.shape[0], \
@@ -431,6 +432,15 @@ class TomogramCoveragePlanner(object):
         else:
             print("All candidate points contain NaN values.")
         return candidate_points_idx, candidate_points_angle, candidate_points_xyz
+    
+    def getExploredGraph(self):
+        """
+        Get the explored graph.
+
+        Returns:
+            np.ndarray: The explored graph.
+        """
+        return self.explored
 
 
 
@@ -448,13 +458,13 @@ class TomogramCoveragePlanner(object):
         base_angles = [0, 90, 180, 270]
         rewards = np.zeros(len(base_angles), dtype=np.int32)
         Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
-
+    
         # Get the height of the current point
         current_height = self.elev_g[point_index[0], point_index[1], point_index[2]]
-
+    
         # Find all layers with the same height at the same x, y position
         same_height_layers = np.where(self.elev_g[:, point_index[1], point_index[2]] == current_height)[0]
-
+    
         for i, base_angle in enumerate(base_angles):
             # Calculate angles with 2-degree steps
             angles = np.deg2rad(np.arange(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, step=10))
@@ -468,33 +478,21 @@ class TomogramCoveragePlanner(object):
                 # Determine the step direction for x and y
                 x_step = 1 if x_max >= x_min else -1
                 y_step = 1 if y_max >= y_min else -1
-
-                x_indices = np.arange(x_min, x_max + x_step, x_step)
-                y_indices = np.arange(y_min, y_max + y_step, y_step)
-
-                # Apply bounds check independently for x_indices and y_indices
-                x_valid_mask = (0 <= x_indices) & (x_indices < self.map_dim[0])
-                y_valid_mask = (0 <= y_indices) & (y_indices < self.map_dim[1])
-
-                # Filter valid indices
-                x_indices = x_indices[x_valid_mask]
-                y_indices = y_indices[y_valid_mask]
-
-                # Create a meshgrid of x_indices and y_indices
-                x_mesh, y_mesh = np.meshgrid(x_indices, y_indices, indexing='ij')
-
-                # Iterate through the meshgrid and update all layers with the same height
-                for i_x, i_y in zip(x_mesh.flatten(), y_mesh.flatten()):
-                    for layer in same_height_layers:  # Iterate over layers with the same height
-                        if self.trav[layer, i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
-                            rewards[i] += 1
-                            break  # Exit the loop when a barrier is encountered
-                        if Explored_cells[i, layer, i_x, i_y] == 0:
-                            rewards[i] += 1
-                            Explored_cells[i, layer, i_x, i_y] = 1
-                        elif np.isnan(Explored_cells[i, layer, i_x, i_y]):
+    
+                for i_x in range(x_min, x_max + x_step, x_step): 
+                    stop = False
+                    for i_y in range(y_min, y_max + y_step, y_step): 
+                        if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
+                            for layer in same_height_layers:  # Iterate over layers with the same height
+                                if Explored_cells[i, layer, i_x, i_y] == 0:
+                                    rewards[i] += 1
+                                    Explored_cells[i, layer, i_x, i_y] = 1
+                                if self.trav[layer, i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
+                                    stop = True
+                                    break
+                        if stop:
                             break
-
+    
         # Determine the best angle
         best_angle_index = np.argmax(rewards)
         best_angle = base_angles[best_angle_index]
