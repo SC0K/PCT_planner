@@ -173,7 +173,6 @@ class TomogramCoveragePlanner(object):
         self.planner.plan(self.start_idx, self.end_idx, True)
         path_finder: a_star.Astar = self.planner.get_path_finder()
         path = path_finder.get_result_matrix()
-        print("path length:", len(path))
         if len(path) == 0:
             return None
 
@@ -259,6 +258,9 @@ class TomogramCoveragePlanner(object):
         """
         Sample points that are uniformly distributed in space with a fixed distance equal to the sensor range
         in the x and y directions, and a smaller fixed step in the vertical (slice) direction.
+
+        Note:
+            the grid is indexed as (slice, y, x), where slice is the first dimension. The notaion in this function is reversed such that x_indices is actually the y dimension.
     
         Returns:
             np.ndarray: Array of valid sampled points (s, x, y indices).
@@ -275,7 +277,7 @@ class TomogramCoveragePlanner(object):
         # Filter out invalid or untraversable points
         valid_indices = []
         for s, x, y in sampled_indices:
-            if self.trav[s, x, y] < self.cost_barrier and self.elev_g[s, x, y] >= 0:
+            if self.trav[s, x, y] < 30 and self.elev_g[s, x, y] >= 0:
                 valid_indices.append([s, x, y])
     
         valid_indices = np.array(valid_indices)
@@ -351,7 +353,7 @@ class TomogramCoveragePlanner(object):
             idx (np.ndarray): The grid indices (s, x, y).
 
         Returns:
-            np.ndarray: The map coordinates (x, y).
+            np.ndarray: The map coordinates (x, y, z).
         """
         # Convert grid indices to map coordinates
         map_y = (idx[1] - self.offset[1]) * self.resolution + self.center[1]

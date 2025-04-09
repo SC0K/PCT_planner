@@ -44,29 +44,31 @@ def pct_plan():
     # if traj_3d is not None:
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
-
+#########################  Test sampled points ################################
     # sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
     # sampled_points_idx, sampled_points_xyz = planner.sampleUniformPointsInSpace()
     # print("Candidate points:", sampled_points_xyz.shape)
     # publish_points(sampled_points_xyz)
-
+#########################################################
     # computeNBVpoints()
 
-    # Publish sampled points
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
     print("Candidate points:", candidate_points_xyz.shape)
-
-    candidate_points_idx = np.array([[4, 20,  80],[  6, 140, 200]])
+########################## Test path planning between any two points ##############################
+    candidate_points_idx = np.array([[6, 60,  240],[  2, 40, 220]])
     candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
     candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
     candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
 
-    publish_points(candidate_points_xyz)
+    
     traj_3d = planner.plan(candidate_points_idx[0], candidate_points_idx[1])
     if traj_3d is not None:
         path_pub.publish(traj2ros(traj_3d))
         print("Trajectory published")
+################################################################
+    publish_points(candidate_points_xyz)
+
     # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
     # print("Adjacency matrix:", adjacency)
 
@@ -101,9 +103,9 @@ def computeNBVpoints():
     candidate_points_xyz = np.array(unique_points_xyz, dtype=np.float32)
     candidate_angles = np.array(unique_angles, dtype=np.float32)
 
-    print("Filtered sampled points (indices):", candidate_points_idx)
-    print("Filtered sampled points (xyz):", candidate_points_xyz)
-    print("Filtered sampled points (angles):", candidate_angles)
+    # print("Filtered sampled points (indices):", candidate_points_idx)
+    # print("Filtered sampled points (xyz):", candidate_points_xyz)
+    # print("Filtered sampled points (angles):", candidate_angles)
     # Save the sampled points to a file
     np.save("sampled_points.npy", candidate_points_xyz)
     np.save("sampled_points_idx.npy", candidate_points_idx)
