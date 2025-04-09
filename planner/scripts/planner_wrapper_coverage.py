@@ -156,8 +156,7 @@ class TomogramCoveragePlanner(object):
     
         return adj_matrix
         
-
-    def plan(self, start_pos, end_pos):
+    def plan_with_idx(self, start_pos, end_pos):
         # TODO: calculate slice index. By default the start and end pos are all at slice 0
         # self.start_idx[1:] = self.pos2idx(start_pos)
         # self.end_idx[1:] = self.pos2idx(end_pos)
@@ -169,6 +168,40 @@ class TomogramCoveragePlanner(object):
         self.end_idx = end_pos.astype(np.int32)
         print("start_idx:", self.start_idx)
         print("end_idx:", self.end_idx)
+
+        self.planner.plan(self.start_idx, self.end_idx, True)
+        path_finder: a_star.Astar = self.planner.get_path_finder()
+        path = path_finder.get_result_matrix()
+        if len(path) == 0:
+            return None
+
+        optimizer: traj_opt.GPMPOptimizer = (
+            self.planner.get_trajectory_optimizer()
+            if not self.use_quintic
+            else self.planner.get_trajectory_optimizer_wnoj()
+        )
+
+        opt_init = optimizer.get_opt_init_value()
+        init_layer = optimizer.get_opt_init_layer()
+        traj_raw = optimizer.get_result_matrix()
+        layers = optimizer.get_layers()
+        heights = optimizer.get_heights()
+
+        opt_init = np.concatenate([opt_init.transpose(1, 0), init_layer.reshape(-1, 1)], axis=-1)
+        traj = np.concatenate([traj_raw, layers.reshape(-1, 1)], axis=-1)
+        y_idx = (traj.shape[-1] - 1) // 2
+        traj_3d = np.stack([traj[:, 0], traj[:, y_idx], heights / self.resolution], axis=1)
+        traj_3d = transTrajGrid2Map(self.map_dim, self.center, self.resolution, traj_3d)
+
+        return traj_3d
+    
+    def plan(self, start_pos, end_pos):
+        # TODO: calculate slice index. By default the start and end pos are all at slice 0
+        # self.start_idx[1:] = self.pos2idx(start_pos)
+        # self.end_idx[1:] = self.pos2idx(end_pos)
+        self.start_idx[:] = self.pos2idx_3D(start_pos)
+        self.end_idx[:] = self.pos2idx_3D(end_pos)
+        
 
         self.planner.plan(self.start_idx, self.end_idx, True)
         path_finder: a_star.Astar = self.planner.get_path_finder()
