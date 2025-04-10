@@ -98,9 +98,11 @@ def pct_plan():
     tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     print("TSP Path:", len(tsp_path))
     print("TSP Cost:", tsp_cost)
+    tsp_path.pop(-1)
     global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
-    print("Global path:", global_path)
-
+    # print("Global path:", global_path)
+    # candidate_points_xyz = np.array([candidate_points_xyz[tsp_path[0]],candidate_points_xyz[tsp_path[-2]]], dtype=np.float32)
+    # publish_points(candidate_points_xyz)
     full_trajectory = generate_global_trajectory(global_path, planner)
     if len(full_trajectory) > 0:
         path_pub.publish(traj2ros(full_trajectory))
@@ -218,7 +220,7 @@ def computeNBVpoints():
 
 def solve_tsp_nearest_neighbor(adjacency_matrix, start_node=0):
     """
-    Solve the TSP using the Nearest Neighbor Heuristic.
+    Solve the TSP using the Nearest Neighbor Heuristic. Return to the starting node.
 
     Args:
         adjacency_matrix (np.ndarray): The adjacency matrix of the graph.
