@@ -25,7 +25,8 @@ if args.scene == 'Spiral':
     start_pos = np.array([-16.0, -6.0], dtype=np.float32)
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
-    tomo_file = 'building2_9'
+    # tomo_file = 'building2_9'
+    tomo_file = 'building_2F_4R'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
     end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
 else:
@@ -53,13 +54,13 @@ def pct_plan():
     # publish_points(sampled_points_xyz)
    
 ########################## Test path planning between any two points ##############################
-    # candidate_points_idx = np.array([[6, 60,  240],[  2, 40, 220]])
+    # candidate_points_idx = np.array([[0, 20,  20],[  2,20, 20]])
     # candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
     # candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
     # candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
-
+    # publish_points(candidate_points_xyz)
     
-    # traj_3d = planner.plan(candidate_points_idx[0], candidate_points_idx[1])
+    # traj_3d = planner.plan_with_idx(candidate_points_idx[0], candidate_points_idx[1])
     # if traj_3d is not None:
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
