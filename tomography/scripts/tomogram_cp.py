@@ -1,5 +1,6 @@
 import numpy as np
 import cupy as cp
+from cupyx.scipy.ndimage import sobel, gaussian_filter, median_filter, prewitt
 
 from kernels import *
 
@@ -106,7 +107,7 @@ class Tomogram(object):
             self.layers_g, self.layers_c,
             size=(points.shape[0])
         )
-
+        #################################### original gradient calculation ####################################
         diff_x_sq = cp.maximum(
             (self.layers_g[:, 1:-1, :] - self.layers_g[:, :-2, :]) ** 2, 
             (self.layers_g[:, 1:-1, :] - self.layers_g[:,  2:, :]) ** 2
@@ -115,9 +116,49 @@ class Tomogram(object):
             (self.layers_g[:, :, 1:-1] - self.layers_g[:, :, :-2]) ** 2, 
             (self.layers_g[:, :, 1:-1] - self.layers_g[:, :,  2:]) ** 2
         )
-        self.grad_mag_sq[:, 1:-1, 1:-1] = diff_x_sq[:, :, 1:-1] + diff_y_sq[:, 1:-1, :]
+
+        ################################################# Apply Gaussian smoothing to self.layers_g #################################################
+        # smoothed_layers_g = gaussian_filter(self.layers_g, sigma=0.5)
+
+        # # Calculate gradients on the smoothed data
+        # diff_x_sq = cp.maximum(
+        #     (smoothed_layers_g[:, 1:-1, :] - smoothed_layers_g[:, :-2, :]) ** 2,
+        #     (smoothed_layers_g[:, 1:-1, :] - smoothed_layers_g[:, 2:, :]) ** 2
+        # )
+        # diff_y_sq = cp.maximum(
+        #     (smoothed_layers_g[:, :, 1:-1] - smoothed_layers_g[:, :, :-2]) ** 2,
+        #     (smoothed_layers_g[:, :, 1:-1] - smoothed_layers_g[:, :, 2:]) ** 2
+        # )
+
+        ################################################# Apply Median filter to self.layers_g #################################################
+        # self.layers_g  = median_filter(self.layers_g, size=3)
+
+        # # Calculate gradients on the smoothed data
+        # diff_x_sq = cp.maximum(
+        #     (self.layers_g [:, 1:-1, :] - self.layers_g [:, :-2, :]) ** 2,
+        #     (self.layers_g [:, 1:-1, :] - self.layers_g [:, 2:, :]) ** 2
+        # )
+        # diff_y_sq = cp.maximum(
+        #     (self.layers_g [:, :, 1:-1] - self.layers_g [:, :, :-2]) ** 2,
+        #     (self.layers_g [:, :, 1:-1] - self.layers_g [:, :, 2:]) ** 2
+        # )
+
+        ############################################################### Apply Sobel filter to self.layers_g #################################################
+        # grad_x = sobel(smoothed_layers_g, axis=1, cval=10)  # Gradient along x-axis
+        # grad_y = sobel(smoothed_layers_g, axis=2, cval=10)  # Gradient along y-axis
+
+        # # Square the gradients
+        # diff_x_sq = grad_x[:, 1:-1, :] ** 2  # Remove the first and last rows
+        # diff_y_sq = grad_y[:, :, 1:-1] ** 2  # Remove the first and last columns
+
+        # # Initialize grad_mag_sq and grad_mag_max with the correct shape
+        # self.grad_mag_sq[:, 1:-1, 1:-1] = diff_x_sq[:,:,1:-1] + diff_y_sq[:,1:-1,:]
+        # self.grad_mag_max[:, 1:-1, 1:-1] = cp.maximum(diff_x_sq[:,:,1:-1], diff_y_sq[:,1:-1,:])
+
+        ############################################################################################
+
+        self.grad_mag_sq[:, 1:-1, 1:-1] = diff_x_sq[:, :, 1:-1] + diff_y_sq[:, 1:-1, :]       # for filters except sobel
         self.grad_mag_max[:, 1:-1, 1:-1] = cp.maximum(diff_x_sq[:, :, 1:-1], diff_y_sq[:, 1:-1, :])
-        
         interval = (self.layers_c - self.layers_g)
 
         end_gpu.record()

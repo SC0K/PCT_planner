@@ -7,123 +7,12 @@ from nav_msgs.msg import Path
 from sensor_msgs.msg import PointCloud2, PointField
 import sensor_msgs.point_cloud2 as pc2
 from std_msgs.msg import Header
-from python_tsp.heuristics import solve_tsp_simulated_annealing, solve_tsp_local_search
 from utils import *
 from planner_wrapper_coverage import TomogramCoveragePlanner
-
-sys.path.append('../')
-from config import Config
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--scene', type=str, default='Spiral', help='Name of the scene. Available: [\'Spiral\', \'Building\', \'Plaza\']')
-args = parser.parse_args()
-
-cfg = Config()
-
-if args.scene == 'Spiral':
-    tomo_file = 'spiral0.3_2'
-    start_pos = np.array([-16.0, -6.0], dtype=np.float32)
-    end_pos = np.array([-26.0, -5.0], dtype=np.float32)
-elif args.scene == 'Building':
-    # tomo_file = 'building2_9'
-    tomo_file = 'building_2F_4R'
-    start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
-    end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
-else:
-    tomo_file = 'plaza3_10'
-    start_pos = np.array([0.0, 0.0], dtype=np.float32)
-    end_pos = np.array([23.0, 10.0], dtype=np.float32)
-
-path_pub = rospy.Publisher("/pct_path", Path, latch=True, queue_size=1)
-explored_cells_pub = rospy.Publisher("/explored_cells", PointCloud2, latch=True, queue_size=1)
-planner = TomogramCoveragePlanner(cfg)
-
-sampled_points_pub = rospy.Publisher("/sampled_points", PointCloud2, latch=True, queue_size=1)
-
-def pct_plan():
-    planner.loadTomogram(tomo_file)
-
-    # traj_3d = planner.plan(start_pos, end_pos)
-    # if traj_3d is not None:
-    #     path_pub.publish(traj2ros(traj_3d))
-    #     print("Trajectory published")
-#########################  Test sampled points ################################
-    # sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
-    # sampled_points_idx, sampled_points_xyz = planner.sampleUniformPointsInSpace()
-    # print("Candidate points:", sampled_points_xyz.shape)
-    # publish_points(sampled_points_xyz)
-   
-########################## Test path planning between any two points ##############################
-    # candidate_points_idx = np.array([[0, 20,  20],[  2,20, 20]])
-    # candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
-    # candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
-    # candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
-    # publish_points(candidate_points_xyz)
-    
-    # traj_3d = planner.plan_with_idx(candidate_points_idx[0], candidate_points_idx[1])
-    # if traj_3d is not None:
-    #     path_pub.publish(traj2ros(traj_3d))
-    #     print("Trajectory published")
-################################################################
-    # computeNBVpoints()
-    
-    candidate_points_xyz = np.load("sampled_points.npy")
-    candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
-    explored_cells = np.load("explored_cells.npy")
-    candidate_angles = np.load("sampled_points_angles.npy")
-    print("Candidate points:", candidate_points_xyz.shape)
-    # publish_points(candidate_points_xyz)
-######################### Publish explored cells ##############################
-    # publish_explored_cells(
-    #         explored_cells,
-    #         planner.elev_g,
-    #         planner.resolution,
-    #         planner.center,
-    #         planner.offset
-    #     )
-################################## Compute adjacency matrix computation ##############################
-    # Computation time ~ 60s for 60 points
-    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    # print("Adjacency matrix:", adjacency)
-    # np.save("adjacency_matrix.npy", adjacency)
-############################# Solving TSP problem ##############################
-    adjacency_matrix = np.load("adjacency_matrix.npy")      
-    updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
-    remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
-    # np.save("reachable_adjacency_matrix.npy", updated_adjacency_matrix)
-    # np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
-    # np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
-    # np.save("reachable_sampled_points_xyz.npy", updated_sampled_points_xyz)
-    # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
-    publish_points(updated_sampled_points_xyz)
-    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
-    tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
-    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0)
-    # tsp_path = tsp_path[:-1] 
-
-    print("TSP Path:", len(tsp_path))
-    print("TSP Cost:", tsp_cost)
-    global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
-    print("Global path:", global_path)
-    # candidate_points_xyz = np.array([candidate_points_xyz[tsp_path[0]],candidate_points_xyz[tsp_path[-2]]], dtype=np.float32)
-    # publish_points(candidate_points_xyz)
-    full_trajectory = generate_global_trajectory(global_path, planner)
-    if len(full_trajectory) > 0:
-        path_pub.publish(traj2ros(full_trajectory))
-        print("Full 3D trajectory published")
-    else:
-        rospy.logwarn("Failed to generate a full 3D trajectory")
-
-
-
-
-    
-    
-    
 def generate_global_trajectory(global_path, planner):
     """
     Generate a 3D trajectory for the global path by concatenating the trajectories
-    between consecutive points. Set the diagonal entries to 0.
+    between consecutive points.
 
     Args:
         global_path (np.ndarray): The global path as a sequence of 3D points.
@@ -169,13 +58,9 @@ def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_point
     """
     n = adjacency_matrix.shape[0]
     rows_to_remove = []
-    for i in np.arange(0, n):
-        if i ==0:
-            adjacency_matrix[i,i] = 0
-        else:
-            adjacency_matrix[i,i] = 0
-            if adjacency_matrix[0,i] == np.inf:
-                rows_to_remove.append(i)
+    for i in np.arange(1, n):
+        if adjacency_matrix[0,i] == np.inf:
+            rows_to_remove.append(i)
     # Remove rows and columns corresponding to isolated nodes
     updated_adjacency_matrix = np.delete(adjacency_matrix, rows_to_remove, axis=0)
     updated_adjacency_matrix = np.delete(updated_adjacency_matrix, rows_to_remove, axis=1)
@@ -357,9 +242,3 @@ def publish_explored_cells(explored_cells, elev_g, resolution, center, offset, f
 
     point_cloud_msg = pc2.create_cloud(header, fields, points)
     explored_cells_pub.publish(point_cloud_msg)
-if __name__ == '__main__':
-    rospy.init_node("pct_planner", anonymous=True)
-
-    pct_plan()
-
-    rospy.spin()

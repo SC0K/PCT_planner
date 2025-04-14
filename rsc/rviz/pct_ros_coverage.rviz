@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /Status1
         - /tomogram1
+        - /pct_path1
         - /Explored_region1
       Splitter Ratio: 0.5
     Tree Height: 1072
@@ -115,12 +116,12 @@ Visualization Manager:
       Buffer Length: 1
       Class: rviz/Path
       Color: 245; 121; 0
-      Enabled: false
+      Enabled: true
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
       Line Style: Billboards
-      Line Width: 0.30000001192092896
+      Line Width: 0.10000000149011612
       Name: pct_path
       Offset:
         X: 0
@@ -134,7 +135,7 @@ Visualization Manager:
       Shaft Length: 0.10000000149011612
       Topic: /pct_path
       Unreliable: false
-      Value: false
+      Value: true
     - Alpha: 0.5
       Autocompute Intensity Bounds: false
       Autocompute Value Bounds:
@@ -698,7 +699,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 29.26798439025879
+      Distance: 24.813369750976562
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -714,9 +715,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5247974991798401
+      Pitch: 0.6502010822296143
       Target Frame: <Fixed Frame>
-      Yaw: 1.6935935020446777
+      Yaw: 1.9835935831069946
     Saved: ~
 Window Geometry:
   Displays:
