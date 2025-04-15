@@ -104,10 +104,11 @@ def pct_plan():
     print("TSP Path:", len(tsp_path))
     print("TSP Cost:", tsp_cost)
     global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
-    print("Global path:", global_path)
+    # print("Global path:", global_path)
     # candidate_points_xyz = np.array([candidate_points_xyz[tsp_path[0]],candidate_points_xyz[tsp_path[-2]]], dtype=np.float32)
     # publish_points(candidate_points_xyz)
     full_trajectory = generate_global_trajectory(global_path, planner)
+    np.save("full_trajectory.npy", full_trajectory)
     if len(full_trajectory) > 0:
         path_pub.publish(traj2ros(full_trajectory))
         print("Full 3D trajectory published")
