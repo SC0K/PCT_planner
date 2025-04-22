@@ -108,14 +108,14 @@ class Tomogram(object):
             size=(points.shape[0])
         )
         #################################### original gradient calculation ####################################
-        diff_x_sq = cp.maximum(
-            (self.layers_g[:, 1:-1, :] - self.layers_g[:, :-2, :]) ** 2, 
-            (self.layers_g[:, 1:-1, :] - self.layers_g[:,  2:, :]) ** 2
-        )
-        diff_y_sq = cp.maximum(
-            (self.layers_g[:, :, 1:-1] - self.layers_g[:, :, :-2]) ** 2, 
-            (self.layers_g[:, :, 1:-1] - self.layers_g[:, :,  2:]) ** 2
-        )
+        # diff_x_sq = cp.maximum(
+        #     (self.layers_g[:, 1:-1, :] - self.layers_g[:, :-2, :]) ** 2, 
+        #     (self.layers_g[:, 1:-1, :] - self.layers_g[:,  2:, :]) ** 2
+        # )
+        # diff_y_sq = cp.maximum(
+        #     (self.layers_g[:, :, 1:-1] - self.layers_g[:, :, :-2]) ** 2, 
+        #     (self.layers_g[:, :, 1:-1] - self.layers_g[:, :,  2:]) ** 2
+        # )
 
         ################################################# Apply Gaussian smoothing to self.layers_g #################################################
         # smoothed_layers_g = gaussian_filter(self.layers_g, sigma=0.5)
@@ -131,17 +131,17 @@ class Tomogram(object):
         # )
 
         ################################################# Apply Median filter to self.layers_g #################################################
-        # self.layers_g  = median_filter(self.layers_g, size=3)
+        self.layers_g  = median_filter(self.layers_g, size=3)
 
-        # # Calculate gradients on the smoothed data
-        # diff_x_sq = cp.maximum(
-        #     (self.layers_g [:, 1:-1, :] - self.layers_g [:, :-2, :]) ** 2,
-        #     (self.layers_g [:, 1:-1, :] - self.layers_g [:, 2:, :]) ** 2
-        # )
-        # diff_y_sq = cp.maximum(
-        #     (self.layers_g [:, :, 1:-1] - self.layers_g [:, :, :-2]) ** 2,
-        #     (self.layers_g [:, :, 1:-1] - self.layers_g [:, :, 2:]) ** 2
-        # )
+        # Calculate gradients on the smoothed data
+        diff_x_sq = cp.maximum(
+            (self.layers_g [:, 1:-1, :] - self.layers_g [:, :-2, :]) ** 2,
+            (self.layers_g [:, 1:-1, :] - self.layers_g [:, 2:, :]) ** 2
+        )
+        diff_y_sq = cp.maximum(
+            (self.layers_g [:, :, 1:-1] - self.layers_g [:, :, :-2]) ** 2,
+            (self.layers_g [:, :, 1:-1] - self.layers_g [:, :, 2:]) ** 2
+        )
 
         ############################################################### Apply Sobel filter to self.layers_g #################################################
         # grad_x = sobel(smoothed_layers_g, axis=1, cval=10)  # Gradient along x-axis

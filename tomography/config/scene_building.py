@@ -4,21 +4,22 @@ from .scene import ScenePCD, SceneMap, SceneTrav
 class SceneBuilding():
     pcd = ScenePCD()
     # pcd.file_name = 'building2_9.pcd'
-    pcd.file_name = 'building_2F_4R.pcd'
+    # pcd.file_name = 'building_2F_4R.pcd'
+    pcd.file_name = 'building_LEE.pcd'
 
     map = SceneMap()
-    map.resolution = 0.15
-    map.ground_h = 0.0
-    map.slice_dh = 0.5
+    map.resolution = 0.02
+    map.ground_h = -5
+    map.slice_dh = 1.0
 
     trav = SceneTrav()
     trav.kernel_size = 7
     trav.interval_min = 0.50
     trav.interval_free = 0.65
-    trav.slope_max = 0.4
-    trav.step_max = 0.4       # This factor influnce largely on the traversibility of the stairs/ slopes
+    trav.slope_max = 0.6
+    trav.step_max = 0.6      # This factor influnce largely on the traversibility of the stairs/ slopes
     trav.standable_ratio = 0.10
     trav.cost_barrier = 50.0
-    trav.safe_margin = 0.5
-    trav.inflation = 0.15
+    trav.safe_margin = 0.3
+    trav.inflation = 0.1
 
