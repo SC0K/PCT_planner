@@ -310,7 +310,7 @@ class TomogramCoveragePlanner(object):
         # Filter out invalid or untraversable points
         valid_indices = []
         for s, x, y in sampled_indices:
-            if self.trav[s, x, y] < 30 and self.elev_g[s, x, y] >= 0:
+            if self.trav[s, x, y] < 30 and self.elev_g[s, x, y] > -100:
                 valid_indices.append([s, x, y])
     
         valid_indices = np.array(valid_indices)

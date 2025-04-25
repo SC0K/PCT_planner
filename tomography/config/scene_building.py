@@ -8,8 +8,8 @@ class SceneBuilding():
     pcd.file_name = 'building_LEE.pcd'
 
     map = SceneMap()
-    map.resolution = 0.02
-    map.ground_h = -5
+    map.resolution = 0.05
+    map.ground_h = 0.0
     map.slice_dh = 1.0
 
     trav = SceneTrav()

@@ -10,6 +10,8 @@ import rospy
 from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud2
 import sensor_msgs.point_cloud2 as pc2
+from geometry_msgs.msg import PointStamped, Point
+from visualization_msgs.msg import Marker
 
 from tomogram_cp import Tomogram
 
@@ -123,10 +125,73 @@ class Tomography(object):
         self.publishLayers(self.layer_C_pub_list, layers_c, None)
         self.publishTomogram(layers_g, layers_t)
         self.publishRawTomogram(layers_g, raw_cost)
+        self.layers_g = layers_g
+
+    def process_modified(self, points, start_point, end_point):        
+        t_map = 0.0
+        t_trav = 0.0
+        t_simp = 0.0
+        t_all = 0.0
+        n_repeat = 1
+
+        """ 
+        GPU time benchmark, where CUDA events are synchronized for correct time measurement.
+        The function is repeatedly run for n_repeat times to calculate the average processing time of each modules.
+        The time of the first warm-up run is excluded to reduce timing fluctuation and exclude the overhead in initial invocations.
+        See https://docs.cupy.dev/en/stable/user_guide/performance.html for more details
+        """
+        for i in range(n_repeat + 1):
+            t_start = time.time()
+            layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c, t_gpu,raw_cost = self.tomogram.point2map(points)
+
+            if i > 0:
+                t_map += t_gpu['t_map']
+                t_trav += t_gpu['t_trav']
+                t_simp += t_gpu['t_simp']
+                t_all += (time.time() - t_start) * 1e3
+
+        rospy.loginfo("Num slices simp: %d", layers_g.shape[0])
+        rospy.loginfo("Num repeats (for benchmarking only): %d", n_repeat)
+        rospy.loginfo(" -- avg t_map  (ms): %f", t_map / n_repeat)
+        rospy.loginfo(" -- avg t_trav (ms): %f", t_trav / n_repeat)
+        rospy.loginfo(" -- avg t_simp (ms): %f", t_simp / n_repeat)
+        rospy.loginfo(" -- avg t_all  (ms): %f", t_all / n_repeat)
+
+        rospy.loginfo("Start point: %s", start_point)
+        rospy.loginfo("End point: %s", end_point)
+        s1, y1, x1 = start_point
+        s2, y2, x2 = end_point
+
+        num_steps = int(np.linalg.norm([s2 - s1, y2 - y1, x2 - x1]) * 2)
+        s_vals = np.linspace(s1, s2, num_steps).astype(int)
+        y_vals = np.linspace(y1, y2, num_steps).astype(int)
+        x_vals = np.linspace(x1, x2, num_steps).astype(int)
+        
+
+        radius = int(0.5 / self.resolution)
+
+        for s, y, x in zip(s_vals, y_vals, x_vals):
+            if 0 <= s < layers_g.shape[0] and 0 <= y < self.map_dim_y and 0 <= x < self.map_dim_x:
+                y_min, y_max = max(0, y - radius), min(self.map_dim_y, y + radius + 1)
+                x_min, x_max = max(0, x - radius), min(self.map_dim_x, x + radius + 1)
+                # print(f"Layer {s}, y_min: {y_min}, y_max: {y_max}, x_min: {x_min}, x_max: {x_max}")
+                # print("original layers_t values: ", layers_t[s, x_min:x_max,y_min:y_max]) # layers_t: dimensions (s, x, y)
+                layers_t[s, x_min:x_max, y_min:y_max] = 0.0
+
+        map_file = os.path.splitext(self.pcd_file)[0]
+        self.exportTomogram(np.stack((layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c,raw_cost)), map_file)
+
+        self.initROS()
+        self.publishPoints(points)
+        self.publishLayers(self.layer_G_pub_list, layers_g, layers_t)
+        self.publishLayers(self.layer_C_pub_list, layers_c, None)
+        self.publishTomogram(layers_g, layers_t)
+        self.publishRawTomogram(layers_g, raw_cost)
+
 
     def exportTomogram(self, tomogram, map_file):        
         data_dict = {
-            'data': tomogram.astype(np.float16),
+            'data': tomogram.astype(np.float32),
             'resolution': self.resolution,
             'center': self.center,
             'slice_h0': self.slice_h0,
@@ -238,6 +303,83 @@ class Tomography(object):
         points_msg = pc2.create_cloud(header, POINT_FIELDS_XYZI, global_points)
         self.tomogram_pub_raw.publish(points_msg)
 
+    def initPathInjection(self):
+        self.clicked_points = []
+        self.clicked_points_pub = rospy.Publisher("/clicked_points_marker", Marker, queue_size=10)
+        rospy.Subscriber("/clicked_point", PointStamped, self.clicked_point_callback)
+        rospy.loginfo("Click two points in RViz to inject a traversable path.")
+
+
+    def clicked_point_callback(self, msg):
+        self.clicked_points.append(msg.point)
+        rospy.loginfo(f"Clicked: ({msg.point.x:.2f}, {msg.point.y:.2f}, {msg.point.z:.2f})")
+
+        # Publish the clicked points for visualization
+        marker = Marker()
+        marker.header.frame_id = self.map_frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "clicked_points"
+        marker.id = len(self.clicked_points)  # Unique ID for each point
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position = msg.point
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.2  # Adjust size as needed
+        marker.scale.y = 0.2
+        marker.scale.z = 0.2
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0  # Fully opaque
+        self.clicked_points_pub.publish(marker)
+
+        if len(self.clicked_points) == 2:
+            # self.tomogram.inject_manual_path(self.clicked_points[0], self.clicked_points[1])
+            rospy.loginfo("Traversable path injected between points.")
+
+            # Update visualization and save
+            points = self.loadPCD(self.pcd_file)
+            start_xyz = np.array([self.clicked_points[0].x, self.clicked_points[0].y, self.clicked_points[0].z])
+            end_xyz = np.array([self.clicked_points[1].x, self.clicked_points[1].y, self.clicked_points[1].z])
+            start_point = self.pos2idx_3D(start_xyz)
+            end_point = self.pos2idx_3D(end_xyz)
+            self.process_modified(points, start_point, end_point)
+            # self.publishUpdatedTomogram()
+            # self.clicked_points.clear()
+
+    def pos2idx_3D(self, pos):
+        """
+        Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
+        
+        Args:
+            pos (np.ndarray): The 3D position (x, y, z).
+        
+        Returns:
+            np.ndarray: The grid indices (s, y, x).
+        """
+        # Subtract the center to align with the grid
+        pos_xy = np.array([pos[0], pos[1]])
+        pos_xy = pos_xy - self.center
+        
+        # Calculate x and y indices
+        offset = np.array([int(self.map_dim_x / 2), int(self.map_dim_y / 2)], dtype=np.int32)
+        idx_xy = np.round(pos_xy / self.resolution).astype(np.int32) + offset
+        idx_xy = np.array([idx_xy[1], idx_xy[0]], dtype=np.int32)  # Swap x and y for grid indexing
+        
+        # Search for the z index (layer number) using the precomputed layer modes
+        z_height = pos[2]  # Extract the z-coordinate
+        z_idx = -1  # Default to -1 if no valid layer is found
+        for s in range(self.layers_g.shape[0]):
+            print(f"Layer height {s}: {self.layers_g[s, idx_xy[1], idx_xy[0]]}")
+            if abs(z_height - self.layers_g[s, idx_xy[1], idx_xy[0]]) <= self.resolution*2:
+                z_idx = s
+                break
+        
+        # Combine z_idx with x and y indices
+        idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.float32)
+        return idx
+
+
 
 if __name__ == '__main__':
     import argparse
@@ -252,5 +394,6 @@ if __name__ == '__main__':
     rospy.init_node('pointcloud_tomography', anonymous=True)
 
     mapping = Tomography(cfg, scene_cfg)
+    mapping.initPathInjection()
 
     rospy.spin()

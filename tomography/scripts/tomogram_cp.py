@@ -1,7 +1,7 @@
 import numpy as np
 import cupy as cp
 from cupyx.scipy.ndimage import sobel, gaussian_filter, median_filter, prewitt
-
+from scipy.stats import mode
 from kernels import *
 
 
