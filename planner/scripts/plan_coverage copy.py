@@ -76,13 +76,13 @@ def pct_plan():
     print("Candidate points:", candidate_points_xyz.shape)
     # publish_points(candidate_points_xyz)
 # ######################### Publish explored cells ##############################
-    # publish_explored_cells(
-    #         explored_cells,
-    #         planner.elev_g,
-    #         planner.resolution,
-    #         planner.center,
-    #         planner.offset
-    #     )
+    publish_explored_cells(
+            explored_cells,
+            planner.elev_g,
+            planner.resolution,
+            planner.center,
+            planner.offset
+        )
 # # # ################################## Compute adjacency matrix computation ##############################
 #     # Computation time ~ 60s for 60 points
     # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
@@ -98,29 +98,31 @@ def pct_plan():
     candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
     candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
     candidate_angles[[i, j]] = candidate_angles[[j, i]]
-    # publish start point:
-    start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
-    publish_points(start_point.reshape(1, 3), frame_id="map")
-
-    
     np.set_printoptions(threshold=np.inf)
-    # print("Adjacency matrix:", adjacency_matrix)  
+    print("Adjacency matrix:", adjacency_matrix)  
 
     updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
     remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
+    np.save("reachable_adjacency_matrix.npy", updated_adjacency_matrix)
+    np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
+    np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
+    np.save("reachable_sampled_points_xyz.npy", updated_sampled_points_xyz)
     updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
-    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
+    publish_points(updated_sampled_points_xyz)
+    print("Updated adjacency matrix:", updated_adjacency_matrix.shape   )
+    tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
-    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0)
+    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0)
     tsp_path = tsp_path[:-1] 
-    ## TODO: recompute the explored region because some candidates that are not reachable are removed   
+
     print("TSP Path:", tsp_path)
     print("TSP Cost:", tsp_cost)
     global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
     print("Global path:", global_path)
     candidate_points_xyz = np.array([candidate_points_xyz[tsp_path[0]],candidate_points_xyz[tsp_path[-2]]], dtype=np.float32)
+    publish_points(candidate_points_xyz)
     full_trajectory = generate_global_trajectory(global_path, planner)
-    # np.save("full_trajectory.npy", full_trajectory)
+    np.save("full_trajectory.npy", full_trajectory)
     if len(full_trajectory) > 0:
         path_pub.publish(traj2ros(full_trajectory))
         print("Full 3D trajectory published")
