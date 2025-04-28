@@ -3,13 +3,88 @@ import sys
 import pickle
 import numpy as np
 import math
-from scipy.stats import mode
 from utils import *
-
+import os
+os.environ["NUMBA_CUDA_FORCE_CUDA_VERSION"] = "12.0"
+from numba import njit, prange, cuda
+import numpy as np
+import math
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
 
 rsg_root = os.path.dirname(os.path.abspath(__file__)) + '/../..'
+
+from numba import cuda, float32, int32
+import math
+
+@cuda.jit
+def nextBestView_cuda(
+    sampled_points_idx, elev_g, explored, trav, sensor_fov, sensor_range, resolution,
+    cost_barrier, map_dim, base_angles, rewards
+):
+    """
+    CUDA kernel to calculate the rewards for all sampled points in parallel.
+    """
+    idx = cuda.grid(1)
+    if idx >= sampled_points_idx.shape[0]:
+        return
+
+    point_index = sampled_points_idx[idx]
+
+    local_rewards = cuda.local.array(4, dtype=float32)
+    for i in range(4):
+        local_rewards[i] = 0.0
+
+    MAX_LAYERS = 100
+    same_height_layers = cuda.local.array(MAX_LAYERS, dtype=int32)
+    layer_count = 0
+
+    for angle_idx in range(4):
+        angle = base_angles[angle_idx]
+        reward = 0
+
+        current_height = elev_g[point_index[0], point_index[1], point_index[2]]
+
+        layer_count = 0
+        for s in range(MAX_LAYERS):
+            if s < elev_g.shape[0] and elev_g[s, point_index[1], point_index[2]] == current_height:
+                same_height_layers[layer_count] = s
+                layer_count += 1
+
+        for step_angle in range(-int(sensor_fov / 2), int(sensor_fov / 2) + 1, 10):
+            rad_angle = math.radians(angle + step_angle)
+
+            x_min = point_index[1]
+            x_max = point_index[1] + math.floor(sensor_range * math.cos(rad_angle) / resolution)
+            y_min = point_index[2]
+            y_max = point_index[2] + math.floor(sensor_range * math.sin(rad_angle) / resolution)
+
+            x_step = 1 if x_max >= x_min else -1
+            y_step = 1 if y_max >= y_min else -1
+
+            for i_x in range(x_min, x_max + x_step, x_step):
+                stop = False
+                for i_y in range(y_min, y_max + y_step, y_step):
+                    if 0 <= i_x < map_dim[0] and 0 <= i_y < map_dim[1]:
+                        for j in range(layer_count):
+                            layer = same_height_layers[j]
+                            if explored[layer, i_x, i_y] == 0:
+                                reward += 1
+                            if trav[layer, i_x, i_y] == cost_barrier:
+                                stop = True
+                                break
+                    if stop:
+                        break
+
+        local_rewards[angle_idx] = reward
+
+    best_reward = local_rewards[0]
+    for i in range(1, 4):
+        if local_rewards[i] > best_reward:
+            best_reward = local_rewards[i]
+
+    rewards[idx] = best_reward
+
 
 
 class TomogramCoveragePlanner(object):
@@ -394,75 +469,73 @@ class TomogramCoveragePlanner(object):
     
     def nextBestView(self):
         """
-        Calculate the reward for each sampled point based on the number of unseen cells in its neighborhood.
-    
-        Returns:
-            np.ndarray: Array of rewards for each sampled point.
+        CUDA-based implementation of the next best view calculation.
         """
-        min_reward = 100
-        finished = False
-        sampled_points_idx, sampled_points_xyz= self.sampleUniformPointsInSpace()
-        best_point = None
-        best_angle = None
-        best_explored_cells = self.explored.copy()
-        candidate_points_idx = np.full(sampled_points_idx.shape, np.nan, dtype=np.float32)
-        candidate_points_angle = np.full(sampled_points_idx.shape[0], np.nan, dtype=np.float32)
-        candidate_points_xyz = np.full(sampled_points_xyz.shape, np.nan, dtype=np.float32)
-        target_num = np.count_nonzero(~np.isnan(self.explored))
-        for j in range(candidate_points_idx.shape[0]):
-            if finished == True:
-                    break
-            print("explored cells:", np.nansum(self.explored))
-            if np.nansum(self.explored) < self.cfg.planner.coverage_threshold * target_num: 
-                best_reward = -1               
-                ## Loop to find the next best point
-                # print("percent of coverage:", np.sum(self.explored) / target_num)
-                for i, point_index in enumerate(sampled_points_idx):
-                    angle, reward, explored_cells = self.BestAnglewithReward(point_index)
-                    if reward > best_reward:
-                        best_reward = reward
-                        best_point = point_index
-                        best_angle = angle
-                        best_explored_cells = explored_cells
-                # Update the explored graph with the best angle
-                self.explored = best_explored_cells
-                candidate_points_idx[j] = best_point
-                candidate_points_angle[j] = best_angle
-                matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
-                if len(matching_indices) > 0:
-                    candidate_points_xyz[j] = sampled_points_xyz[matching_indices[0]]
-                    # print("Best reward:", best_reward)
-                if best_reward < min_reward:
-                    finished = True
-                    break
-                # Remove the best point from the sampled points
-                                # Find the matching row index for best_point
-                matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
-                
-                # Check if a match is found before attempting to delete
-                if len(matching_indices) > 0:
-                    sampled_points_idx = np.delete(sampled_points_idx, matching_indices[0], axis=0)
-                    sampled_points_xyz = np.delete(sampled_points_xyz, matching_indices[0], axis=0)
-                else:
-                    print("Warning: Best point not found in sampled_points_idx. Skipping deletion.")
-            else: 
+        # Sample points
+        sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
+        num_points = sampled_points_idx.shape[0]
+        base_angles = np.array([0, 90, 180, 270], dtype=np.float32)
+
+        # Allocate GPU memory
+        d_sampled_points_idx = cuda.to_device(sampled_points_idx)
+        d_elev_g = cuda.to_device(self.elev_g)
+        d_explored = cuda.to_device(self.explored)  # We can remove this actually
+        d_trav = cuda.to_device(self.trav)
+        d_base_angles = cuda.to_device(base_angles)
+        d_rewards = cuda.device_array(num_points, dtype=np.float32)
+
+        candidate_points_idx = []
+        candidate_points_angle = []
+        candidate_points_xyz = []
+
+        while num_points > 0:
+            # 1. Launch the kernel
+            threads_per_block = 256
+            blocks_per_grid = (num_points + threads_per_block - 1) // threads_per_block
+            nextBestView_cuda[blocks_per_grid, threads_per_block](
+                d_sampled_points_idx, d_elev_g, self.explored, d_trav, self.sensor_fov, self.sensor_range,
+                self.resolution, self.cost_barrier, tuple(self.map_dim), d_base_angles,
+                d_rewards
+            )
+
+            # 2. Copy rewards back
+            rewards = d_rewards.copy_to_host()
+
+            # 3. Find the best candidate
+            best_idx = np.argmax(rewards)
+            best_reward = rewards[best_idx]
+
+            if best_reward <= 0:
                 break
-            print("percent of coverage:", np.nansum(self.explored) / target_num)
-            
-    
-        # Remove NaN values from candidate points
-        assert candidate_points_idx.shape[0] == candidate_points_angle.shape[0] == candidate_points_xyz.shape[0], \
-            "Mismatch in the number of rows between candidate arrays."
-        
-        # Remove rows where any column contains NaN
-        valid_mask = ~np.isnan(candidate_points_idx).any(axis=1)
-        if np.any(valid_mask):  # Only apply the mask if there are valid rows
-            candidate_points_idx = candidate_points_idx[valid_mask]
-            candidate_points_angle = candidate_points_angle[valid_mask]
-            candidate_points_xyz = candidate_points_xyz[valid_mask]
-        else:
-            print("All candidate points contain NaN values.")
+
+            # 4. Update explored map ON CPU
+            best_point = sampled_points_idx[best_idx]
+            best_angle, _, explored_update = self.BestAnglewithReward(best_point.astype(np.int32))
+            self.explored = np.maximum(self.explored, explored_update)
+
+            # 5. Store
+            candidate_points_idx.append(best_point)
+            candidate_points_angle.append(best_angle)
+            candidate_points_xyz.append(self.idx2pos_3D(best_point))
+
+            # 6. Remove selected candidate
+            sampled_points_idx = np.delete(sampled_points_idx, best_idx, axis=0)
+            num_points -= 1
+
+            # 7. Update GPU memory
+            d_sampled_points_idx = cuda.to_device(sampled_points_idx)
+            d_rewards = cuda.device_array(num_points, dtype=np.float32)  # New size
+
+            print(f"Selected candidate: {best_point}, Reward: {best_reward}")
+            print(f"Percent of explored cells: {np.nansum(self.explored) / np.count_nonzero(~np.isnan(self.explored)):.2%}")
+
+        # Final output
+        candidate_points_idx = np.array(candidate_points_idx, dtype=np.int32)
+        candidate_points_angle = np.array(candidate_points_angle, dtype=np.float32)
+        candidate_points_xyz = np.array(candidate_points_xyz, dtype=np.float32)
+
         return candidate_points_idx, candidate_points_angle, candidate_points_xyz
+
     
     def getExploredGraph(self):
         """
