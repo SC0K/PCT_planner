@@ -3,14 +3,81 @@ import sys
 import pickle
 import numpy as np
 import math
-from scipy.stats import mode
 from utils import *
-
+from numba import njit
+import numpy as np
+import math
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
 
 rsg_root = os.path.dirname(os.path.abspath(__file__)) + '/../..'
 
+@njit(parallel=True)
+def BestAnglewithReward_numba(point_index, elev_g, explored, trav, sensor_fov, sensor_range, resolution, cost_barrier, map_dim):
+    """
+    Calculate the best angle for a given point index based on the number of unseen cells in its neighborhood.
+    Args:
+        point_index (tuple): The index of the point in the grid (slice, x, y).
+        elev_g (np.ndarray): Elevation grid.
+        explored (np.ndarray): Explored cells grid.
+        trav (np.ndarray): Travel cost grid.
+        sensor_fov (float): Sensor field of view in degrees.
+        sensor_range (float): Sensor range.
+        resolution (float): Grid resolution.
+        cost_barrier (float): Cost barrier value.
+        map_dim (tuple): Dimensions of the map (x, y).
+    Returns:
+        best_angle (float): The best angle in degrees.
+        reward (int): The reward for the best angle.
+        Explored_cells (np.ndarray): The explored cells for the best angle.
+    """
+    base_angles = [0, 90, 180, 270]
+    rewards = np.zeros(len(base_angles), dtype=np.int32)
+    Explored_cells = np.zeros((len(base_angles), *explored.shape), dtype=np.float32)
+
+    # Get the height of the current point
+    current_height = elev_g[point_index[0], point_index[1], point_index[2]]
+
+    # Find all layers with the same height at the same x, y position
+    same_height_layers = []
+    for s in range(elev_g.shape[0]):
+        if elev_g[s, point_index[1], point_index[2]] == current_height:
+            same_height_layers.append(s)
+    same_height_layers = np.array(same_height_layers, dtype=np.int32)
+
+    for i, base_angle in enumerate(base_angles):
+        # Calculate angles with 2-degree steps
+        angles = np.deg2rad(np.arange(base_angle - sensor_fov / 2, base_angle + sensor_fov / 2, step=10))
+        Explored_cells[i] = explored.copy()
+        for angle in angles:
+            # Calculate the coordinates of the sensor range
+            x_min = point_index[1]
+            x_max = point_index[1] + math.floor(sensor_range * np.cos(angle) / resolution)
+            y_min = point_index[2]
+            y_max = point_index[2] + math.floor(sensor_range * np.sin(angle) / resolution)
+            # Determine the step direction for x and y
+            x_step = 1 if x_max >= x_min else -1
+            y_step = 1 if y_max >= y_min else -1
+
+            for i_x in range(x_min, x_max + x_step, x_step):
+                stop = False
+                for i_y in range(y_min, y_max + y_step, y_step):
+                    if 0 <= i_x < map_dim[0] and 0 <= i_y < map_dim[1]:
+                        for layer in same_height_layers:  # Iterate over layers with the same height
+                            if Explored_cells[i, layer, i_x, i_y] == 0:
+                                rewards[i] += 1
+                                Explored_cells[i, layer, i_x, i_y] = 1
+                            if trav[layer, i_x, i_y] == cost_barrier:  # Stop if a barrier is hit
+                                stop = True
+                                break
+                    if stop:
+                        break
+
+    # Determine the best angle
+    best_angle_index = np.argmax(rewards)
+    best_angle = base_angles[best_angle_index]
+
+    return best_angle, rewards[best_angle_index], Explored_cells[best_angle_index]
 
 class TomogramCoveragePlanner(object):
     def __init__(self, cfg):
@@ -418,7 +485,18 @@ class TomogramCoveragePlanner(object):
                 ## Loop to find the next best point
                 # print("percent of coverage:", np.sum(self.explored) / target_num)
                 for i, point_index in enumerate(sampled_points_idx):
-                    angle, reward, explored_cells = self.BestAnglewithReward(point_index)
+                    # angle, reward, explored_cells = self.BestAnglewithReward(point_index)
+                    angle, reward, explored_cells = BestAnglewithReward_numba(
+                        point_index,  # Ensure point_index is a 1D NumPy array
+                        self.elev_g,
+                        self.explored,
+                        self.trav,
+                        self.sensor_fov,  # Ensure sensor_fov is a float
+                        self.sensor_range,  # Ensure sensor_range is a float
+                        self.resolution,  # Ensure resolution is a float
+                        self.cost_barrier,  # Ensure cost_barrier is a float
+                        tuple(self.map_dim)  # Pass map_dim as a tuple
+                    )
                     if reward > best_reward:
                         best_reward = reward
                         best_point = point_index
