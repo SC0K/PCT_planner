@@ -145,7 +145,11 @@ class TomogramCoveragePlanner(object):
                 self.initPlanner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
                 # Plan a path between the two points
                 print("Planning path between points:", sampled_points_idx[i], sampled_points_idx[j])
-                self.planner.plan(sampled_points_idx[i], sampled_points_idx[j], True)
+                # self.planner.plan(sampled_points_idx[i], sampled_points_idx[j], True)
+                # Swap x and y for planning
+                start_idx = np.array([sampled_points_idx[i][0], sampled_points_idx[i][2], sampled_points_idx[i][1]], dtype=np.int32)
+                end_idx = np.array([sampled_points_idx[j][0], sampled_points_idx[j][2], sampled_points_idx[j][1]], dtype=np.int32)
+                self.planner.plan(start_idx, end_idx, True)
                 path_finder: a_star.Astar = self.planner.get_path_finder()
                 path = path_finder.get_result_matrix()
     
@@ -163,8 +167,8 @@ class TomogramCoveragePlanner(object):
         # self.end_idx[:] = self.pos2idx_3D(end_pos)
         
 
-        self.start_idx = start_pos.astype(np.int32)
-        self.end_idx = end_pos.astype(np.int32)
+        self.start_idx = np.array([start_pos[0], start_pos[2], start_pos[1]], dtype=np.int32)   # planner needs s,y,x whereas the grid index is s,x,y
+        self.end_idx = np.array([end_pos[0], end_pos[2], end_pos[1]], dtype=np.int32)
         print("start_idx:", self.start_idx)
         print("end_idx:", self.end_idx)
 
@@ -297,8 +301,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(1, int(self.sensor_range / self.resolution))  # Step size in the x dimension
-        step_y = max(1, int(self.sensor_range / self.resolution))  # Step size in the y dimension
+        step_x = max(1, int(self.sensor_range / self.resolution/1.5))  # Step size in the x dimension
+        step_y = max(1, int(self.sensor_range / self.resolution/1.5))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -308,7 +312,7 @@ class TomogramCoveragePlanner(object):
         # Filter out invalid or untraversable points
         valid_indices = []
         for s, x, y in sampled_indices:
-            if self.trav[s, x, y] < 30 and self.elev_g[s, x, y] > -100:
+            if self.trav[s, x, y] < 30 and self.elev_g[s, x, y] > -90:
                 valid_indices.append([s, x, y])
     
         valid_indices = np.array(valid_indices)
@@ -387,9 +391,9 @@ class TomogramCoveragePlanner(object):
             np.ndarray: The map coordinates (x, y, z).
         """
         # Convert grid indices to map coordinates
-        map_y = (idx[1] - self.offset[1]) * self.resolution + self.center[1]
-        map_x = (idx[2] - self.offset[0]) * self.resolution + self.center[0]
-        map_z = self.elev_g[idx[0], idx[2], idx[1]]
+        map_x = (idx[1] - self.offset[0]) * self.resolution + self.center[0]
+        map_y = (idx[2] - self.offset[1]) * self.resolution + self.center[1]
+        map_z = self.elev_g[idx[0], idx[1], idx[2]]
         return np.array([map_x, map_y, map_z], dtype=np.float32)
     
     def nextBestView(self):
@@ -409,6 +413,7 @@ class TomogramCoveragePlanner(object):
         candidate_points_angle = np.full(sampled_points_idx.shape[0], np.nan, dtype=np.float32)
         candidate_points_xyz = np.full(sampled_points_xyz.shape, np.nan, dtype=np.float32)
         target_num = np.count_nonzero(~np.isnan(self.explored))
+        last_percentage = 0
         for j in range(candidate_points_idx.shape[0]):
             if finished == True:
                     break
@@ -435,6 +440,9 @@ class TomogramCoveragePlanner(object):
                 if best_reward < min_reward:
                     finished = True
                     break
+                if np.nansum(self.explored) / target_num - last_percentage < 0.001:
+                    finished = True
+                    break
                 # Remove the best point from the sampled points
                                 # Find the matching row index for best_point
                 matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
@@ -448,6 +456,7 @@ class TomogramCoveragePlanner(object):
             else: 
                 break
             print("percent of coverage:", np.nansum(self.explored) / target_num)
+            last_percentage = np.nansum(self.explored) / target_num
             
     
         # Remove NaN values from candidate points

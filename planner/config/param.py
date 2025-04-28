@@ -1,5 +1,5 @@
 class ConfigPlanner():
-    use_quintic = False
+    use_quintic = True
     max_heading_rate = 10
     cost_barrier = 50
     coverage_threshold = 0.9

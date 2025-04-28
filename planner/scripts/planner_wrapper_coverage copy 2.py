@@ -454,9 +454,9 @@ class TomogramCoveragePlanner(object):
             np.ndarray: The map coordinates (x, y, z).
         """
         # Convert grid indices to map coordinates
-        map_y = (idx[1] - self.offset[1]) * self.resolution + self.center[1]
-        map_x = (idx[2] - self.offset[0]) * self.resolution + self.center[0]
-        map_z = self.elev_g[idx[0], idx[2], idx[1]]
+        map_x = (idx[1] - self.offset[0]) * self.resolution + self.center[0]
+        map_y = (idx[2] - self.offset[1]) * self.resolution + self.center[1]
+        map_z = self.elev_g[idx[0], idx[1], idx[2]]
         return np.array([map_x, map_y, map_z], dtype=np.float32)
     
     def nextBestView(self):

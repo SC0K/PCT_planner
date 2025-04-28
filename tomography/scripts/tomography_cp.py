@@ -7,7 +7,7 @@ import numpy as np
 import open3d as o3d
   
 import rospy
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Empty
 from sensor_msgs.msg import PointCloud2
 import sensor_msgs.point_cloud2 as pc2
 from geometry_msgs.msg import PointStamped, Point
@@ -117,7 +117,7 @@ class Tomography(object):
         self.n_slice = layers_g.shape[0]
 
         map_file = os.path.splitext(self.pcd_file)[0]
-        self.exportTomogram(np.stack((layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c,raw_cost)), map_file)
+        # self.exportTomogram(np.stack((layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c,raw_cost)), map_file)
 
         self.initROS()
         self.publishPoints(points)
@@ -127,7 +127,7 @@ class Tomography(object):
         self.publishRawTomogram(layers_g, raw_cost)
         self.layers_g = layers_g
 
-    def process_modified(self, points, start_point, end_point):        
+    def process_modified(self, points, start_end_indices):        
         t_map = 0.0
         t_trav = 0.0
         t_simp = 0.0
@@ -157,26 +157,28 @@ class Tomography(object):
         rospy.loginfo(" -- avg t_simp (ms): %f", t_simp / n_repeat)
         rospy.loginfo(" -- avg t_all  (ms): %f", t_all / n_repeat)
 
-        rospy.loginfo("Start point: %s", start_point)
-        rospy.loginfo("End point: %s", end_point)
-        s1, y1, x1 = start_point
-        s2, y2, x2 = end_point
-
-        num_steps = int(np.linalg.norm([s2 - s1, y2 - y1, x2 - x1]) * 2)
-        s_vals = np.linspace(s1, s2, num_steps).astype(int)
-        y_vals = np.linspace(y1, y2, num_steps).astype(int)
-        x_vals = np.linspace(x1, x2, num_steps).astype(int)
         
 
-        radius = int(0.5 / self.resolution)
+        radius = int(0.3 / self.resolution)
 
-        for s, y, x in zip(s_vals, y_vals, x_vals):
-            if 0 <= s < layers_g.shape[0] and 0 <= y < self.map_dim_y and 0 <= x < self.map_dim_x:
-                y_min, y_max = max(0, y - radius), min(self.map_dim_y, y + radius + 1)
-                x_min, x_max = max(0, x - radius), min(self.map_dim_x, x + radius + 1)
-                # print(f"Layer {s}, y_min: {y_min}, y_max: {y_max}, x_min: {x_min}, x_max: {x_max}")
-                # print("original layers_t values: ", layers_t[s, x_min:x_max,y_min:y_max]) # layers_t: dimensions (s, x, y)
-                layers_t[s, x_min:x_max, y_min:y_max] = 0.0
+        # Process all start and end point pairs
+        for start_idx, end_idx in start_end_indices:
+            rospy.loginfo("Start point: %s", start_idx)
+            rospy.loginfo("End point: %s", end_idx)
+            s1, y1, x1 = start_idx
+            s2, y2, x2 = end_idx
+
+            num_steps = int(np.linalg.norm([s2 - s1, y2 - y1, x2 - x1]) * 2)
+            s_vals = np.linspace(s1, s2, num_steps).astype(int)
+            y_vals = np.linspace(y1, y2, num_steps).astype(int)
+            x_vals = np.linspace(x1, x2, num_steps).astype(int)
+
+            for s, y, x in zip(s_vals, y_vals, x_vals):
+                if 0 <= s < layers_g.shape[0] and 0 <= y < self.map_dim_y and 0 <= x < self.map_dim_x:
+                    y_min, y_max = max(0, y - radius), min(self.map_dim_y, y + radius + 1)
+                    x_min, x_max = max(0, x - radius), min(self.map_dim_x, x + radius + 1)
+                    layers_t[s, x_min:x_max, y_min:y_max] = 0.0
+
 
         map_file = os.path.splitext(self.pcd_file)[0]
         self.exportTomogram(np.stack((layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c,raw_cost)), map_file)
@@ -305,15 +307,16 @@ class Tomography(object):
 
     def initPathInjection(self):
         self.clicked_points = []
+        self.all_paths = []  # Store all pairs of traversable paths
         self.clicked_points_pub = rospy.Publisher("/clicked_points_marker", Marker, queue_size=10)
         rospy.Subscriber("/clicked_point", PointStamped, self.clicked_point_callback)
-        rospy.loginfo("Click two points in RViz to inject a traversable path.")
-
-
+        rospy.Subscriber("/end_input", Empty, self.end_input_callback)  # Subscribe to an "end input" topic
+        rospy.loginfo("Click pairs of points in RViz to inject traversable paths. Use rostopic pub /end_input std_msgs/Empty \"{}\" to finish input.")
+    
     def clicked_point_callback(self, msg):
         self.clicked_points.append(msg.point)
         rospy.loginfo(f"Clicked: ({msg.point.x:.2f}, {msg.point.y:.2f}, {msg.point.z:.2f})")
-
+    
         # Publish the clicked points for visualization
         marker = Marker()
         marker.header.frame_id = self.map_frame
@@ -332,21 +335,31 @@ class Tomography(object):
         marker.color.b = 0.0
         marker.color.a = 1.0  # Fully opaque
         self.clicked_points_pub.publish(marker)
-
+    
         if len(self.clicked_points) == 2:
-            # self.tomogram.inject_manual_path(self.clicked_points[0], self.clicked_points[1])
-            rospy.loginfo("Traversable path injected between points.")
-
-            # Update visualization and save
-            points = self.loadPCD(self.pcd_file)
-            start_xyz = np.array([self.clicked_points[0].x, self.clicked_points[0].y, self.clicked_points[0].z])
-            end_xyz = np.array([self.clicked_points[1].x, self.clicked_points[1].y, self.clicked_points[1].z])
-            start_point = self.pos2idx_3D(start_xyz)
-            end_point = self.pos2idx_3D(end_xyz)
-            self.process_modified(points, start_point, end_point)
-            # self.publishUpdatedTomogram()
-            # self.clicked_points.clear()
-
+            # Store the pair of points
+            self.all_paths.append((self.clicked_points[0], self.clicked_points[1]))
+            rospy.loginfo("Traversable path added between points.")
+            self.clicked_points = []  # Reset for the next pair
+    
+    def end_input_callback(self, msg):
+        rospy.loginfo("End of input detected. Processing all paths.")
+        points = self.loadPCD(self.pcd_file)
+    
+        # Convert all point pairs to start and end indices
+        start_end_indices = []
+        for start_point, end_point in self.all_paths:
+            start_xyz = np.array([start_point.x, start_point.y, start_point.z])
+            end_xyz = np.array([end_point.x, end_point.y, end_point.z])
+            start_idx = self.pos2idx_3D(start_xyz)
+            end_idx = self.pos2idx_3D(end_xyz)
+            start_end_indices.append((start_idx, end_idx))
+    
+        # Pass all pairs to process_modified
+        self.process_modified(points, start_end_indices)
+    
+        rospy.loginfo("All paths processed.")
+        self.all_paths = []  # Clear the paths after processing
     def pos2idx_3D(self, pos):
         """
         Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
