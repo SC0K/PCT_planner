@@ -112,9 +112,9 @@ def pct_plan():
     remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
-    # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
+    tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
     publish_points(updated_sampled_points_xyz)
-    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0)
+    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0)
     tsp_path = tsp_path[:-1] 
 #     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
     print("TSP Path:", tsp_path)

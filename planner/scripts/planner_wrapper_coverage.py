@@ -503,7 +503,7 @@ class TomogramCoveragePlanner(object):
         current_height = self.elev_g[point_index[0], point_index[1], point_index[2]]
     
         # Find all layers with the same height at the same x, y position
-        same_height_layers = np.where(self.elev_g[:, point_index[1], point_index[2]] == current_height)[0]
+        same_height_layers = np.where(np.abs(self.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.05)[0]
     
         for i, base_angle in enumerate(base_angles):
             # Calculate angles with 2-degree steps
