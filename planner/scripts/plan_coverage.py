@@ -10,6 +10,7 @@ from std_msgs.msg import Header
 from python_tsp.heuristics import solve_tsp_simulated_annealing, solve_tsp_local_search
 from utils import *
 from planner_wrapper_coverage import TomogramCoveragePlanner
+import math
 
 sys.path.append('../')
 from config import Config
@@ -55,7 +56,7 @@ def pct_plan():
     # publish_points(sampled_points_xyz)
    
 ########################## Test path planning between any two points ##############################
-    # candidate_points_idx = np.array([[  0, 461, 234], [  0, 731, 234]])
+    # candidate_points_idx = np.array([[  0, 250, 176], [  0, 400, 170]])
     # print(planner.trav.shape)
     # print("-----------------heights:", planner.elev_g[candidate_points_idx[0][0], candidate_points_idx[0][1], candidate_points_idx[0][2]], planner.elev_g[candidate_points_idx[1][0], candidate_points_idx[1][1], candidate_points_idx[1][2]])
     # candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
@@ -74,16 +75,16 @@ def pct_plan():
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
     explored_cells = np.load("explored_cells.npy")
     candidate_angles = np.load("sampled_points_angles.npy")
-    # print("Candidate points:", candidate_points_idx)
+    print("Candidate points:", candidate_points_idx.shape)
     # publish_points(candidate_points_xyz)
-######################### Publish explored cells ##############################
-    publish_explored_cells(
-            explored_cells,
-            planner.elev_g,
-            planner.resolution,
-            planner.center,
-            planner.offset
-        )
+# ######################### Publish explored cells ##############################
+    # publish_explored_cells(
+    #         explored_cells,
+    #         planner.elev_g,
+    #         planner.resolution,
+    #         planner.center,
+    #         planner.offset
+    #     )
 ################################## Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
     # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
@@ -93,7 +94,7 @@ def pct_plan():
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
 #     ## Optioal sometimes: make sure that the first candidate point is a valid view point (reachabl)
-    i,j = 0, 7
+    i,j = 0, 23
     adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
     adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
     candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
@@ -101,15 +102,20 @@ def pct_plan():
     candidate_angles[[i, j]] = candidate_angles[[j, i]]
     # publish start point:
     start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
-    # print("Start point:", candidate_points_idx[0])
-    # publish_points(start_point.reshape(1, 3), frame_id="map")
+    print("Viewpoints:", candidate_points_idx)
+    publish_points(start_point.reshape(1, 3), frame_id="map")
 
     
-#     np.set_printoptions(threshold=np.inf)
-#     # print("Adjacency matrix:", adjacency_matrix)  
+    # np.set_printoptions(threshold=np.inf)
+    # print("Adjacency matrix:", adjacency_matrix)  
 
     updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
     remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
+    print("Updated adjacency matrix:", updated_adjacency_matrix.shape)
+    np.save("reachable_adjacency_matrix.npy", updated_adjacency_matrix)
+    np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
+    np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
+    np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
@@ -120,7 +126,7 @@ def pct_plan():
     print("TSP Path:", tsp_path)
     print("TSP Cost:", tsp_cost)
     global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
-    # print("Global path:", global_path)
+    print("Global path:", global_path)
     candidate_points_xyz = np.array([candidate_points_xyz[tsp_path[0]],candidate_points_xyz[tsp_path[-2]]], dtype=np.float32)
     full_trajectory = generate_global_trajectory(global_path, planner)
     # np.save("full_trajectory.npy", full_trajectory)
@@ -129,6 +135,59 @@ def pct_plan():
         print("Full 3D trajectory published")
     else:
         rospy.logwarn("Failed to generate a full 3D trajectory")
+    length = compute_trajectory_length(full_trajectory)
+    print(f"Trajectory Length: {length:.2f} meters")
+    explored_area, explored_cells = compute_explored_region(updated_sampled_points_idx)
+    print(f"Explored Area: {explored_area:.2f} m^2")
+    publish_explored_cells(
+        explored_cells,
+        planner.elev_g,
+        planner.resolution,
+        planner.center,
+        planner.offset
+    )
+
+def compute_explored_region(points_idx):
+    """
+    Compute the explored region based on the adjacency matrix and candidate points.
+    """
+    # Load the adjacency matrix and candidate points
+    candidate_points_idx = np.load("reachable_sampled_points_idx.npy").astype(np.int32)
+    candidate_angles = np.load("reachable_sampled_points_angles.npy")
+    base_angles = [0]
+    Explored_cells = planner.initExplorationGraph()
+    for point_index in points_idx:
+            # Get the height of the current point
+        current_height = planner.elev_g[point_index[0], point_index[1], point_index[2]]
+
+        # Find all layers with the same height at the same x, y position
+        same_height_layers = np.where(np.abs(planner.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.2)[0]
+        for base_angle in base_angles:
+            angles = np.deg2rad(np.arange(base_angle - planner.sensor_fov / 2, base_angle + planner.sensor_fov / 2, step=10))
+            for angle in angles:
+                # Calculate the coordinates of the sensor range
+                x_min = point_index[1]
+                x_max = point_index[1] + math.floor(planner.sensor_range * np.cos(angle) / planner.resolution)
+                y_min = point_index[2]
+                y_max = point_index[2] + math.floor(planner.sensor_range * np.sin(angle) / planner.resolution)
+                # Determine the step direction for x and y
+                x_step = 1 if x_max >= x_min else -1
+                y_step = 1 if y_max >= y_min else -1
+
+                for i_x in range(x_min, x_max + x_step, x_step): 
+                    stop = False
+                    for i_y in range(y_min, y_max + y_step, y_step): 
+                        if 0 <= i_x < planner.map_dim[0] and 0 <= i_y < planner.map_dim[1]:
+                            for layer in same_height_layers:  # Iterate over layers with the same height
+                                if Explored_cells[layer, i_x, i_y] == 0:
+                                    Explored_cells[layer, i_x, i_y] = 1
+                                if planner.trav[layer, i_x, i_y] == planner.cost_barrier:  # Stop if a barrier is hit
+                                    stop = True
+                                    break
+                        if stop:
+                            break
+    explore_area = np.nansum(Explored_cells) * planner.resolution ** 2
+    return explore_area, Explored_cells
 
 
 
@@ -222,13 +281,16 @@ def computeNBVpoints():
     seen_xy = {}
     for idx, point in enumerate(candidate_points_idx):
         s, x, y = point
+        s = int(s)
+        x = int(x)
+        y = int(y)
         xy_key = (x, y)
         height = planner.elev_g[s, x, y]
         if xy_key not in seen_xy or np.abs(height - seen_xy[xy_key]) > 0.05:  # Check if the height is different
             unique_points_idx.append(point)
             unique_points_xyz.append(candidate_points_xyz[idx])  # Keep the corresponding xyz map
             unique_angles.append(candidate_angles[idx])  # Keep the corresponding angle
-            seen_xy[xy_key] = planner.layer_modes[s]
+            seen_xy[xy_key] = planner.elev_g[s,x,y]
 
     candidate_points_idx = np.array(unique_points_idx, dtype=np.int32)
     candidate_points_xyz = np.array(unique_points_xyz, dtype=np.float32)
@@ -373,6 +435,26 @@ def publish_explored_cells(explored_cells, elev_g, resolution, center, offset, f
 
     point_cloud_msg = pc2.create_cloud(header, fields, points)
     explored_cells_pub.publish(point_cloud_msg)
+
+def compute_trajectory_length(trajectory):
+    """
+    Compute the total length of a 3D trajectory in meters.
+
+    Args:
+        trajectory (np.ndarray): The trajectory as a sequence of 3D points (N x 3).
+
+    Returns:
+        float: The total length of the trajectory in meters.
+    """
+    if len(trajectory) < 2:
+        return 0.0  # No length if there are fewer than 2 points
+
+    # Compute the Euclidean distance between consecutive points
+    distances = np.linalg.norm(np.diff(trajectory, axis=0), axis=1)
+
+    # Sum up the distances
+    total_length = np.sum(distances)
+    return total_length
 if __name__ == '__main__':
     rospy.init_node("pct_planner", anonymous=True)
 

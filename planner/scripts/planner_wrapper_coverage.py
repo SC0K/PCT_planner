@@ -301,8 +301,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(1, int(self.sensor_range / self.resolution/1.5))  # Step size in the x dimension
-        step_y = max(1, int(self.sensor_range / self.resolution/1.5))  # Step size in the y dimension
+        step_x = max(1, int(1.5 / self.resolution))  # Step size in the x dimension
+        step_y = max(1, int(1.5 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -403,7 +403,7 @@ class TomogramCoveragePlanner(object):
         Returns:
             np.ndarray: Array of rewards for each sampled point.
         """
-        min_reward = 100
+        min_reward = 50
         finished = False
         sampled_points_idx, sampled_points_xyz= self.sampleUniformPointsInSpace()
         best_point = None
@@ -440,9 +440,9 @@ class TomogramCoveragePlanner(object):
                 if best_reward < min_reward:
                     finished = True
                     break
-                if np.nansum(self.explored) / target_num - last_percentage < 0.001:
-                    finished = True
-                    break
+                # if np.nansum(self.explored) / target_num - last_percentage < 0.001:
+                #     finished = True
+                #     break
                 # Remove the best point from the sampled points
                                 # Find the matching row index for best_point
                 matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
@@ -495,7 +495,8 @@ class TomogramCoveragePlanner(object):
             reward (int): The reward for the best angle
             Explored_cells (np.ndarray): The explored cells for the best angle
         """
-        base_angles = [0, 90, 180, 270]
+        # base_angles = [0, 90, 180, 270]
+        base_angles = [0]
         rewards = np.zeros(len(base_angles), dtype=np.int32)
         Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
     
@@ -503,7 +504,7 @@ class TomogramCoveragePlanner(object):
         current_height = self.elev_g[point_index[0], point_index[1], point_index[2]]
     
         # Find all layers with the same height at the same x, y position
-        same_height_layers = np.where(np.abs(self.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.05)[0]
+        same_height_layers = np.where(np.abs(self.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.2)[0]
     
         for i, base_angle in enumerate(base_angles):
             # Calculate angles with 2-degree steps

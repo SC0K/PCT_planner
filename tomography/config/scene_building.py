@@ -8,7 +8,7 @@ class SceneBuilding():
     pcd.file_name = 'building_LEE.pcd'
 
     map = SceneMap()
-    map.resolution = 0.05
+    map.resolution = 0.1
     map.ground_h = 0.0
     map.slice_dh = 1.0
 
@@ -20,6 +20,6 @@ class SceneBuilding():
     trav.step_max = 0.6      # This factor influnce largely on the traversibility of the stairs/ slopes
     trav.standable_ratio = 0.10
     trav.cost_barrier = 50.0
-    trav.safe_margin = 0.3
+    trav.safe_margin = 0.1
     trav.inflation = 0.1
 
