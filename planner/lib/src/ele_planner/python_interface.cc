@@ -11,6 +11,7 @@ PYBIND11_MODULE(ele_planner, m) {
       .def(py::init<double, bool>(), py::arg("max_heading_rate"),
            py::arg("use_quintic") = false)
       .def("init_map", &OfflineElePlanner::InitMap)
+      .def("init_planner", &OfflineElePlanner::InitPlanner)
       .def("plan", &OfflineElePlanner::Plan)
       .def("debug", &OfflineElePlanner::Debug)
       .def("set_reference_height", &OfflineElePlanner::SetReferenceHeight)

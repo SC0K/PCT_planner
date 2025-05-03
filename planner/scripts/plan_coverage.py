@@ -11,6 +11,7 @@ from python_tsp.heuristics import solve_tsp_simulated_annealing, solve_tsp_local
 from utils import *
 from planner_wrapper_coverage import TomogramCoveragePlanner
 import math
+import time
 
 sys.path.append('../')
 from config import Config
@@ -69,23 +70,18 @@ def pct_plan():
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
 # ################################################################
+    # start_time = time.time()
     # computeNBVpoints()
+    # end_time = time.time()
+    # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
-    explored_cells = np.load("explored_cells.npy")
     candidate_angles = np.load("sampled_points_angles.npy")
     print("Candidate points:", candidate_points_idx.shape)
-    # publish_points(candidate_points_xyz)
-# ######################### Publish explored cells ##############################
-    # publish_explored_cells(
-    #         explored_cells,
-    #         planner.elev_g,
-    #         planner.resolution,
-    #         planner.center,
-    #         planner.offset
-    #     )
-################################## Compute adjacency matrix computation ##############################
+    publish_points(candidate_points_xyz)
+
+#################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
     # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
     # print("Adjacency matrix:", adjacency)
@@ -94,7 +90,7 @@ def pct_plan():
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
 #     ## Optioal sometimes: make sure that the first candidate point is a valid view point (reachabl)
-    i,j = 0, 23
+    i,j = 0, 1
     adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
     adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
     candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
@@ -119,9 +115,9 @@ def pct_plan():
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
-    publish_points(updated_sampled_points_xyz)
+    # publish_points(updated_sampled_points_xyz)
     # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0)
-    tsp_path = tsp_path[:-1] 
+    # tsp_path = tsp_path[:-1]  
 #     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
     print("TSP Path:", tsp_path)
     print("TSP Cost:", tsp_cost)
@@ -151,26 +147,20 @@ def compute_explored_region(points_idx):
     """
     Compute the explored region based on the adjacency matrix and candidate points.
     """
-    # Load the adjacency matrix and candidate points
     candidate_points_idx = np.load("reachable_sampled_points_idx.npy").astype(np.int32)
     candidate_angles = np.load("reachable_sampled_points_angles.npy")
     base_angles = [0]
     Explored_cells = planner.initExplorationGraph()
     for point_index in points_idx:
-            # Get the height of the current point
         current_height = planner.elev_g[point_index[0], point_index[1], point_index[2]]
-
-        # Find all layers with the same height at the same x, y position
-        same_height_layers = np.where(np.abs(planner.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.2)[0]
+        same_height_layers = np.where(np.abs(planner.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.5)[0]
         for base_angle in base_angles:
             angles = np.deg2rad(np.arange(base_angle - planner.sensor_fov / 2, base_angle + planner.sensor_fov / 2, step=10))
             for angle in angles:
-                # Calculate the coordinates of the sensor range
                 x_min = point_index[1]
                 x_max = point_index[1] + math.floor(planner.sensor_range * np.cos(angle) / planner.resolution)
                 y_min = point_index[2]
                 y_max = point_index[2] + math.floor(planner.sensor_range * np.sin(angle) / planner.resolution)
-                # Determine the step direction for x and y
                 x_step = 1 if x_max >= x_min else -1
                 y_step = 1 if y_max >= y_min else -1
 
@@ -178,10 +168,10 @@ def compute_explored_region(points_idx):
                     stop = False
                     for i_y in range(y_min, y_max + y_step, y_step): 
                         if 0 <= i_x < planner.map_dim[0] and 0 <= i_y < planner.map_dim[1]:
-                            for layer in same_height_layers:  # Iterate over layers with the same height
+                            for layer in same_height_layers:  
                                 if Explored_cells[layer, i_x, i_y] == 0:
                                     Explored_cells[layer, i_x, i_y] = 1
-                                if planner.trav[layer, i_x, i_y] == planner.cost_barrier:  # Stop if a barrier is hit
+                                if planner.trav[layer, i_x, i_y] == planner.cost_barrier:
                                     stop = True
                                     break
                         if stop:
@@ -286,10 +276,10 @@ def computeNBVpoints():
         y = int(y)
         xy_key = (x, y)
         height = planner.elev_g[s, x, y]
-        if xy_key not in seen_xy or np.abs(height - seen_xy[xy_key]) > 0.05:  # Check if the height is different
+        if xy_key not in seen_xy or np.abs(height - seen_xy[xy_key]) > 0.05:  
             unique_points_idx.append(point)
-            unique_points_xyz.append(candidate_points_xyz[idx])  # Keep the corresponding xyz map
-            unique_angles.append(candidate_angles[idx])  # Keep the corresponding angle
+            unique_points_xyz.append(candidate_points_xyz[idx])  
+            unique_angles.append(candidate_angles[idx])  
             seen_xy[xy_key] = planner.elev_g[s,x,y]
 
     candidate_points_idx = np.array(unique_points_idx, dtype=np.int32)
@@ -325,7 +315,6 @@ def solve_tsp_nearest_neighbor(adjacency_matrix, start_node=0):
     visited[current_node] = True
 
     for _ in range(n - 1):
-        # Find the nearest unvisited neighbor
         nearest_neighbor = None
         min_cost = float('inf')
         for neighbor in range(n):
@@ -333,18 +322,16 @@ def solve_tsp_nearest_neighbor(adjacency_matrix, start_node=0):
                 nearest_neighbor = neighbor
                 min_cost = adjacency_matrix[current_node, neighbor]
 
-        # Handle the case where no valid neighbor is found
+    
         if nearest_neighbor is None:
             rospy.logerr("No valid neighbor found. The graph might be disconnected.")
-            return path, float('inf')  # Return the current path and infinite cost
+            return path, float('inf')  
 
-        # Update the path and cost
         path.append(nearest_neighbor)
         total_cost += min_cost
         visited[nearest_neighbor] = True
         current_node = nearest_neighbor
 
-    # Return to the starting node
     total_cost += adjacency_matrix[current_node, start_node]
     path.append(start_node)
 
@@ -427,10 +414,10 @@ def publish_explored_cells(explored_cells, elev_g, resolution, center, offset, f
     for s in range(explored_cells.shape[0]):
         for x in range(explored_cells.shape[1]):
             for y in range(explored_cells.shape[2]):
-                if explored_cells[s, x, y] > 0:  # If the cell is explored
+                if explored_cells[s, x, y] > 0: 
                     map_x = (x - offset[0]) * resolution + center[0]
                     map_y = (y - offset[1]) * resolution + center[1]
-                    map_z = elev_g[s, x, y]  # Use the elevation as the z-coordinate
+                    map_z = elev_g[s, x, y] 
                     points.append([map_x, map_y, map_z])
 
     point_cloud_msg = pc2.create_cloud(header, fields, points)
@@ -447,12 +434,8 @@ def compute_trajectory_length(trajectory):
         float: The total length of the trajectory in meters.
     """
     if len(trajectory) < 2:
-        return 0.0  # No length if there are fewer than 2 points
-
-    # Compute the Euclidean distance between consecutive points
+        return 0.0 
     distances = np.linalg.norm(np.diff(trajectory, axis=0), axis=1)
-
-    # Sum up the distances
     total_length = np.sum(distances)
     return total_length
 if __name__ == '__main__':

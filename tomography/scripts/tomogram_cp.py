@@ -131,7 +131,7 @@ class Tomogram(object):
         # )
 
         ################################################# Apply Median filter to self.layers_g #################################################
-        self.layers_g  = median_filter(self.layers_g, size=3)
+        self.layers_g  = median_filter(self.layers_g, size=2)
 
         # Calculate gradients on the smoothed data
         diff_x_sq = cp.maximum(
