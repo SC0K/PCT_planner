@@ -11,7 +11,7 @@ resolution = 0.1
 n_rays = 50
 
 # === Load and voxelize point cloud ===
-pcd = o3d.io.read_point_cloud("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd")
+pcd = o3d.io.read_point_cloud("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE.pcd")
 pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
 voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
 
@@ -58,6 +58,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
     hash_np = cp.asnumpy(hash_grid)
 
     visible = set()
+    start = time.time()
     for r in range(idxs_np.shape[0]):
         for s in range(idxs_np.shape[1]):
             if not valid_np[r, s]:
@@ -66,11 +67,13 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
             if hash_np[i, j, k]:
                 visible.add((i + min_idx[0], j + min_idx[1], k + min_idx[2]))
                 break 
+    end = time.time()
+    print(f"FOR loop time: {end - start:.3f} s")
     return visible
 
 # === Pose & Orientation ===
-candidate_pose = np.array([2.0, -3.0, 1.0])
-yaw = np.radians(45)
+candidate_pose = np.array([-2.0, -3.0, -0.5])
+yaw = np.radians(0)
 orientation = np.array([
     [np.cos(yaw), -np.sin(yaw), 0],
     [np.sin(yaw),  np.cos(yaw), 0],
