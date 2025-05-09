@@ -109,6 +109,7 @@ class TomogramCoveragePlanner(object):
 
         # Initialize the explored graph
         self.explored = self.initExplorationGraph()
+        self.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE.pcd", 0.2)
         # self.layer_modes = self.compute_layer_modes()
 
     def initExplorationGraph(self):
@@ -462,7 +463,6 @@ class TomogramCoveragePlanner(object):
         Returns:
             list: List of tuples containing the best candidate poses and their orientations.
         """
-        self.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE.pcd", 0.2)
         min_reward = 50
         best_idxs = []
         best_angles = []
@@ -471,9 +471,10 @@ class TomogramCoveragePlanner(object):
 
         # Sample candidate points
         sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
+        sampled_points_xyz = sampled_points_xyz + np.array([0,0,1]) 
 
         # Define multiple yaw angles (in radians) for testing orientations
-        yaw_angles = np.radians([0, 45, 90, 135, 180, 225, 270, 315])  # Example: 8 orientations
+        yaw_angles = np.radians([0, 90, 180, 270])  # Example: 8 orientations
 
         while not finished and len(sampled_points_xyz) > 0:
             best_reward = -1
@@ -514,6 +515,7 @@ class TomogramCoveragePlanner(object):
 
             # Update explored voxels
             for v in best_visible:
+                print(f"Exploring voxel: {v}")
                 local_idx = tuple(v - self.min_idx)
                 self.explored_voxels[local_idx] = True
 
@@ -529,9 +531,69 @@ class TomogramCoveragePlanner(object):
 
         return best_idxs, best_angles, best_xyz
 
+    def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles):
+        """
+        Compute the explored voxels based on candidate points and raycasting.
+
+        Args:
+            candidate_points_xyz (np.ndarray): Candidate points in world coordinates.
+            min_idx (np.ndarray): Minimum voxel indices.
+            grid_shape (tuple): Shape of the voxel grid.
+            hash_grid (cp.ndarray): Hash grid of occupied voxels.
+            explored_voxels (cp.ndarray): Boolean grid of explored voxels.
+            fov_deg (float): Field of view in degrees.
+            max_range (float): Maximum sensor range.
+            resolution (float): Raycasting resolution.
+            n_rays (int): Number of rays.
+
+        Returns:
+            cp.ndarray: Updated explored voxel grid.
+        """
+        explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
+        candidate_points_xyz = candidate_points_xyz + np.array([0,0,1])  # Adjust candidate points for z-axis
+        for i,candidate_pose in enumerate(candidate_points_xyz):
+            # Perform raycasting for the current pose
+            print(f"Exploring candidate pose: {candidate_pose}")
+            orientation = np.array([
+                [np.cos(angles[i]), -np.sin(angles[i]), 0],
+                [np.sin(angles[i]),  np.cos(angles[i]), 0],
+                [0, 0, 1]
+            ])
+            visible = get_visible_voxels_first_hit(
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.sensor_fov,self.sensor_range,
+                self.resolution, n_rays=50)
+            
+            for v in visible:
+                    local_idx = tuple(v - self.min_idx)
+                    explored_voxels[local_idx] = True
+        
+        explored_np = cp.asnumpy(explored_voxels)
+        
+        # Get the indices of all occupied voxels in the hash grid
+        voxel_indices = np.argwhere(cp.asnumpy(self.hash_grid))
+        
+        # Convert voxel indices to world coordinates
+        voxel_centers = (voxel_indices + self.min_idx) * self.voxel_size
+        
+        # Create a point cloud
+        vis_pcd = o3d.geometry.PointCloud()
+        vis_pcd.points = o3d.utility.Vector3dVector(voxel_centers)
+        
+        # Assign colors based on whether the voxel is explored
+        # Vectorized operation to assign colors
+        explored_mask = explored_np[voxel_indices[:, 0], voxel_indices[:, 1], voxel_indices[:, 2]]
+        colors = np.zeros((voxel_indices.shape[0], 3))  # Initialize color array
+        colors[explored_mask] = [1.0, 0.0, 0.0]  # Red for explored
+        colors[~explored_mask] = [0.5, 0.5, 0.5]  # Gray for unexplored
+        vis_pcd.colors = o3d.utility.Vector3dVector(colors)
+        
+        # Visualize the point cloud
+        o3d.visualization.draw_geometries([vis_pcd], window_name="Explored Grid")
+        
+        return explored_voxels
 
 def calculate_rewards_raycast(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid, explored_voxels,
-                              fov_deg=90, max_range=5.0, resolution=0.2, n_rays=30):
+                              fov_deg=100, max_range=10.0, resolution=0.2, n_rays=30):
     """
     Calculate rewards using raycasting to determine visible voxels.
 
@@ -591,3 +653,39 @@ def calculate_rewards_raycast(candidate_pose, orientation, voxel_size, min_idx, 
                     reward += 1
                 break
     return reward, visible
+def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
+                                 fov_deg=90, max_range=10.0, resolution=0.2, n_rays=30):
+    az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
+    el = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
+    az_grid, el_grid = cp.meshgrid(az, el)
+    az_flat = cp.radians(az_grid.flatten())
+    el_flat = cp.radians(el_grid.flatten())
+
+    dirs = cp.stack([
+        cp.cos(el_flat) * cp.cos(az_flat),
+        cp.cos(el_flat) * cp.sin(az_flat),
+        cp.sin(el_flat)
+    ], axis=1)  # (R, 3)
+    dirs = dirs @ cp.asarray(orientation.T)
+
+    dists = cp.arange(0, max_range, resolution)
+    rays = dirs[:, cp.newaxis, :] * dists[cp.newaxis, :, None]
+    rays += cp.asarray(candidate_pose)
+
+    idxs = cp.floor(rays / voxel_size).astype(cp.int32) - cp.asarray(min_idx)
+    valid = cp.all((idxs >= 0) & (idxs < cp.asarray(grid_shape)), axis=-1)
+
+    idxs_np = cp.asnumpy(idxs)
+    valid_np = cp.asnumpy(valid)
+    hash_np = cp.asnumpy(hash_grid)
+
+    visible = set()
+    for r in range(idxs_np.shape[0]):
+        for s in range(idxs_np.shape[1]):
+            if not valid_np[r, s]:
+                continue
+            i, j, k = idxs_np[r, s]
+            if hash_np[i, j, k]:
+                visible.add((i + min_idx[0], j + min_idx[1], k + min_idx[2]))
+                break 
+    return visible

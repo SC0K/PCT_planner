@@ -28,11 +28,11 @@ grid_shape = max_idx - min_idx + 1
 shifted_indices = voxel_indices - min_idx
 hash_grid = cp.zeros(tuple(grid_shape), dtype=cp.bool_)
 for idx in shifted_indices:
-    hash_grid[tuple(idx)] = True
+    hash_grid[tuple(idx)] = True        # true if occupied
 
 # === Raycasting ===
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
-                                 fov_deg=90, max_range=5.0, resolution=0.2, n_rays=30):
+                                 fov_deg=90, max_range=10.0, resolution=0.2, n_rays=30):
     az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
     el = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
@@ -72,7 +72,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
     return visible
 
 # === Pose & Orientation ===
-candidate_pose = np.array([-2.0, -3.0, -0.5])
+candidate_pose = np.array([-3.08243036,  6.80760717,  0.16945899])
 yaw = np.radians(0)
 orientation = np.array([
     [np.cos(yaw), -np.sin(yaw), 0],
@@ -87,7 +87,7 @@ visible_voxels = get_visible_voxels_first_hit(
     fov_deg=fov_deg, max_range=max_range, resolution=resolution, n_rays=n_rays
 )
 end = time.time()
-
+print(f"Hash grid size: {hash_grid.shape}")
 print(f"\nVisible voxels (first hit only): {len(visible_voxels)}")
 print(f"Raycasting time: {end - start:.3f} s")
 

@@ -70,16 +70,16 @@ def pct_plan():
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
 # ################################################################
-    start_time = time.time()
-    computeNBVpoints()
-    end_time = time.time()
-    print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
+    # start_time = time.time()
+    # computeNBVpoints()
+    # end_time = time.time()
+    # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
-    candidate_points_xyz = np.load("sampled_points.npy")
-    candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
-    candidate_angles = np.load("sampled_points_angles.npy")
-    print("Candidate points:", candidate_points_idx.shape)
-    publish_points(candidate_points_xyz)
+    # candidate_points_xyz = np.load("sampled_points.npy")
+    # candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
+    # candidate_angles = np.load("sampled_points_angles.npy")
+    # print("Candidate points:", candidate_points_idx.shape)
+    # publish_points(candidate_points_xyz)
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
@@ -113,6 +113,11 @@ def pct_plan():
     # np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
     # np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
+    points_idx=np.load("reachable_sampled_points_idx.npy")
+    points_angles=np.load("reachable_sampled_points_angles.npy")
+    points_xyz=np.load("reachable_sampled_points.npy")
+    print(points_xyz.shape)
+    planner.compute_and_visualise_explored_voxels(points_xyz, points_angles)
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
     # publish_points(updated_sampled_points_xyz)
@@ -245,12 +250,11 @@ def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_point
 def computeNBVpoints():
     # Compute the next best view points
     candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
-    explored_cells = planner.getExploredGraph()
+    planner.visualizeExploredGrid()
     print("Candidate points:", candidate_points_xyz)
     np.save("sampled_points.npy", candidate_points_xyz)
     np.save("sampled_points_idx.npy", candidate_points_idx)
     np.save("sampled_points_angles.npy", candidate_angles)
-    np.save("explored_cells.npy", explored_cells)
 
     # Publish sampled points
     # candidate_points_idx = candidate_points_idx[:, [0, 2, 1]].astype(np.int32)  # Switch the order of x and y for planning and ensure integers
