@@ -28,8 +28,8 @@ if args.scene == 'Spiral':
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
     # tomo_file = 'building2_9'
-    # tomo_file = 'building_2F_4R'
-    tomo_file = 'building_LEE'
+    tomo_file = 'building_2F_4R'
+    # tomo_file = 'building_LEE'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
     end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
 else:
@@ -71,7 +71,7 @@ def pct_plan():
     #     print("Trajectory published")
 # ################################################################
     # start_time = time.time()
-    # computeNBVpoints()
+    computeNBVpoints()
     # end_time = time.time()
     # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
@@ -83,19 +83,19 @@ def pct_plan():
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
-    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    # print("Adjacency matrix:", adjacency)
-    # np.save("adjacency_matrix.npy", adjacency)
+    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    print("Adjacency matrix:", adjacency)
+    np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
 #     ## Optioal sometimes: make sure that the first candidate point is a valid view point (reachabl)
-    i,j = 0, 1
-    adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
-    adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
-    candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
-    candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
-    candidate_angles[[i, j]] = candidate_angles[[j, i]]
+    # i,j = 0, 1
+    # adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
+    # adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
+    # candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
+    # candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
+    # candidate_angles[[i, j]] = candidate_angles[[j, i]]
     # publish start point:
     start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
     print("Viewpoints:", candidate_points_idx)
@@ -112,13 +112,12 @@ def pct_plan():
     np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
     np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
     np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
-    # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
-    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
+    updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
+    tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
-    # publish_points(updated_sampled_points_xyz)
-    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0)
-    # tsp_path = tsp_path[:-1]  
-#     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
+    publish_points(updated_sampled_points_xyz)
+    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
+    ## TODO: recompute the explored region because some candidates that are not reachable are removed   
     print("TSP Path:", tsp_path)
     print("TSP Cost:", tsp_cost)
     global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
@@ -254,12 +253,7 @@ def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_point
 def computeNBVpoints():
     # Compute the next best view points
     candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
-    explored_cells = planner.getExploredGraph()
     print("Candidate points:", candidate_points_xyz)
-    np.save("sampled_points.npy", candidate_points_xyz)
-    np.save("sampled_points_idx.npy", candidate_points_idx)
-    np.save("sampled_points_angles.npy", candidate_angles)
-    np.save("explored_cells.npy", explored_cells)
 
     # Publish sampled points
     # candidate_points_idx = candidate_points_idx[:, [0, 2, 1]].astype(np.int32)  # Switch the order of x and y for planning and ensure integers

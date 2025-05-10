@@ -260,27 +260,6 @@ class TomogramCoveragePlanner(object):
         idx = np.array([idx[1], idx[0]], dtype=np.float32) # Swap x and y for grid indexing
         return idx
     
-    # def compute_layer_modes(self):
-        # """
-        # Precompute the mode of valid heights for each layer in the elevation map.
-        # Invalid heights (-100) are excluded from the calculation.
-    
-        # Returns:
-        #     np.ndarray: An array of modes for each layer.
-        # """
-        # layer_modes = []
-        # for s in range(self.elev_g.shape[0]):
-        #     # Flatten the layer and exclude invalid heights (-100)
-        #     valid_heights = self.elev_g[s][self.elev_g[s] != -100]
-        #     if len(valid_heights) > 0:
-        #         # Compute the mode of valid heights
-        #         layer_mode = mode(valid_heights, nan_policy='omit').mode[0]
-        #     else:
-        #         # If no valid heights, set mode to NaN
-        #         layer_mode = np.nan
-        #     layer_modes.append(layer_mode)
-        # return np.array(layer_modes, dtype=np.float32)
-    
     def pos2idx_3D(self, pos):
         """
         Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
@@ -412,83 +391,6 @@ class TomogramCoveragePlanner(object):
         map_z = self.elev_g[idx[0], idx[1], idx[2]]
         return np.array([map_x, map_y, map_z], dtype=np.float32)
     
-    # def nextBestView(self):
-    #     """
-    #     Calculate the reward for each sampled point based on the number of unseen cells in its neighborhood.
-    
-    #     Returns:
-    #         np.ndarray: Array of rewards for each sampled point.
-    #     """
-    #     min_reward = 50
-    #     finished = False
-    #     sampled_points_idx, sampled_points_xyz= self.sampleUniformPointsInSpace()
-    #     best_point = None
-    #     best_angle = None
-    #     best_explored_cells = self.explored.copy()
-    #     candidate_points_idx = np.full(sampled_points_idx.shape, np.nan, dtype=np.float32)
-    #     candidate_points_angle = np.full(sampled_points_idx.shape[0], np.nan, dtype=np.float32)
-    #     candidate_points_xyz = np.full(sampled_points_xyz.shape, np.nan, dtype=np.float32)
-    #     target_num = np.count_nonzero(~np.isnan(self.explored))
-    #     last_percentage = 0
-    #     for j in range(candidate_points_idx.shape[0]):
-    #         if finished == True:
-    #                 break
-    #         print("explored cells:", np.nansum(self.explored))
-    #         if np.nansum(self.explored) < self.cfg.planner.coverage_threshold * target_num: 
-    #             best_reward = -1               
-    #             ## Loop to find the next best point
-    #             # print("percent of coverage:", np.sum(self.explored) / target_num)
-    #             for i, point_index in enumerate(sampled_points_idx):
-    #                 angle, reward, explored_cells = self.BestAnglewithReward(point_index)
-    #                 if reward > best_reward:
-    #                     best_reward = reward
-    #                     best_point = point_index
-    #                     best_angle = angle
-    #                     best_explored_cells = explored_cells
-    #             # Update the explored graph with the best angle
-    #             self.explored = best_explored_cells
-    #             candidate_points_idx[j] = best_point
-    #             candidate_points_angle[j] = best_angle
-    #             matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
-    #             if len(matching_indices) > 0:
-    #                 candidate_points_xyz[j] = sampled_points_xyz[matching_indices[0]]
-    #                 # print("Best reward:", best_reward)
-    #             if best_reward < min_reward:
-    #                 finished = True
-    #                 break
-    #             # if np.nansum(self.explored) / target_num - last_percentage < 0.001:
-    #             #     finished = True
-    #             #     break
-    #             # Remove the best point from the sampled points
-    #                             # Find the matching row index for best_point
-    #             matching_indices = np.where((sampled_points_idx == best_point).all(axis=1))[0]
-                
-    #             # Check if a match is found before attempting to delete
-    #             if len(matching_indices) > 0:
-    #                 sampled_points_idx = np.delete(sampled_points_idx, matching_indices[0], axis=0)
-    #                 sampled_points_xyz = np.delete(sampled_points_xyz, matching_indices[0], axis=0)
-    #             else:
-    #                 print("Warning: Best point not found in sampled_points_idx. Skipping deletion.")
-    #         else: 
-    #             break
-    #         print("percent of coverage:", np.nansum(self.explored) / target_num)
-    #         last_percentage = np.nansum(self.explored) / target_num
-            
-    
-    #     # Remove NaN values from candidate points
-    #     assert candidate_points_idx.shape[0] == candidate_points_angle.shape[0] == candidate_points_xyz.shape[0], \
-    #         "Mismatch in the number of rows between candidate arrays."
-        
-    #     # Remove rows where any column contains NaN
-    #     valid_mask = ~np.isnan(candidate_points_idx).any(axis=1)
-    #     if np.any(valid_mask):  # Only apply the mask if there are valid rows
-    #         candidate_points_idx = candidate_points_idx[valid_mask]
-    #         candidate_points_angle = candidate_points_angle[valid_mask]
-    #         candidate_points_xyz = candidate_points_xyz[valid_mask]
-    #     else:
-    #         print("All candidate points contain NaN values.")
-    #     return candidate_points_idx, candidate_points_angle, candidate_points_xyz
-    
     def getExploredGraph(self):
         """
         Get the explored graph.
@@ -498,63 +400,6 @@ class TomogramCoveragePlanner(object):
         """
         return self.explored
 
-
-
-
-    # def BestAnglewithReward(self, point_index): 
-    #     """
-    #     Calculate the best angle for a given point index based on the number of unseen cells in its neighborhood.
-    #     Args:
-    #         point_index (tuple): The index of the point in the grid (slice, x, y).
-    #     Returns:
-    #         best_angle (float): The best angle in degrees
-    #         reward (int): The reward for the best angle
-    #         Explored_cells (np.ndarray): The explored cells for the best angle
-    #     """
-    #     # base_angles = [0, 90, 180, 270]
-    #     base_angles = [0]
-    #     rewards = np.zeros(len(base_angles), dtype=np.int32)
-    #     Explored_cells = np.zeros((len(base_angles), *self.explored.shape), dtype=np.float32)
-    
-    #     # Get the height of the current point
-    #     current_height = self.elev_g[point_index[0], point_index[1], point_index[2]]
-    
-    #     # Find all layers with the same height at the same x, y position
-    #     same_height_layers = np.where(np.abs(self.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.2)[0]
-    
-    #     for i, base_angle in enumerate(base_angles):
-    #         # Calculate angles with 2-degree steps
-    #         angles = np.deg2rad(np.arange(base_angle - self.sensor_fov / 2, base_angle + self.sensor_fov / 2, step=10))
-    #         Explored_cells[i] = self.explored.copy()
-    #         for angle in angles:
-    #             # Calculate the coordinates of the sensor range
-    #             x_min = point_index[1]
-    #             x_max = point_index[1] + math.floor(self.sensor_range * np.cos(angle) / self.resolution)
-    #             y_min = point_index[2]
-    #             y_max = point_index[2] + math.floor(self.sensor_range * np.sin(angle) / self.resolution)
-    #             # Determine the step direction for x and y
-    #             x_step = 1 if x_max >= x_min else -1
-    #             y_step = 1 if y_max >= y_min else -1
-    
-    #             for i_x in range(x_min, x_max + x_step, x_step): 
-    #                 stop = False
-    #                 for i_y in range(y_min, y_max + y_step, y_step): 
-    #                     if 0 <= i_x < self.map_dim[0] and 0 <= i_y < self.map_dim[1]:
-    #                         for layer in same_height_layers:  # Iterate over layers with the same height
-    #                             if Explored_cells[i, layer, i_x, i_y] == 0:
-    #                                 rewards[i] += 1
-    #                                 Explored_cells[i, layer, i_x, i_y] = 1
-    #                             if self.trav[layer, i_x, i_y] == self.cost_barrier:  # Stop if a barrier is hit
-    #                                 stop = True
-    #                                 break
-    #                     if stop:
-    #                         break
-    
-    #     # Determine the best angle
-    #     best_angle_index = np.argmax(rewards)
-    #     best_angle = base_angles[best_angle_index]
-        
-    #     return best_angle, rewards[best_angle_index], Explored_cells[best_angle_index]
 
     def nextBestView(self):
         """
@@ -567,6 +412,9 @@ class TomogramCoveragePlanner(object):
         finished = False
         sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
         target_num = np.count_nonzero(~np.isnan(self.explored))
+        candidate_points_idx = np.empty((0, 3), dtype=np.int32)  # For 3D indices (s, x, y)
+        candidate_points_xyz = np.empty((0, 3), dtype=np.float32)  # For 3D coordinates (x, y, z)
+        candidate_points_angles = np.empty((0,), dtype=np.float32)  # For angles
     
         while not finished:
             print("Explored cells:", np.nansum(self.explored))
@@ -592,18 +440,19 @@ class TomogramCoveragePlanner(object):
                 finished = True
                 break
     
-            best_point = sampled_points_idx[best_reward_index]
+            
             best_angle = best_angles[best_reward_index]
             best_explored_cells = explored_cells[best_reward_index]
     
             self.explored = best_explored_cells
-    
+            candidate_points_idx = np.vstack((candidate_points_idx, sampled_points_idx[best_reward_index]))
+            candidate_points_xyz = np.vstack((candidate_points_xyz, sampled_points_xyz[best_reward_index]))
+            candidate_points_angles = np.append(candidate_points_angles, best_angle)
             sampled_points_idx = np.delete(sampled_points_idx, best_reward_index, axis=0)
             sampled_points_xyz = np.delete(sampled_points_xyz, best_reward_index, axis=0)
-    
             print(f"Best angle: {best_angle}, Percent of coverage: {np.nansum(self.explored) / target_num}")
     
-        return sampled_points_idx,best_angles, sampled_points_xyz
+        return candidate_points_idx,candidate_points_angles, candidate_points_xyz
 
 from numba import njit, prange
 

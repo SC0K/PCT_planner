@@ -28,8 +28,8 @@ if args.scene == 'Spiral':
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
     # tomo_file = 'building2_9'
-    # tomo_file = 'building_2F_4R'
-    tomo_file = 'building_LEE'
+    tomo_file = 'building_2F_4R'
+    # tomo_file = 'building_LEE'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
     end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
 else:
@@ -115,7 +115,7 @@ def pct_plan():
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
     points_idx=np.load("reachable_sampled_points_idx.npy")
     points_angles=np.load("reachable_sampled_points_angles.npy")
-    points_xyz=np.load("reachable_sampled_points.npy")
+    points_xyz=np.load("reachable_sampled_points_xyz.npy")
     print(points_xyz.shape)
     planner.compute_and_visualise_explored_voxels(points_xyz, points_angles)
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)

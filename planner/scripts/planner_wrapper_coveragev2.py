@@ -109,7 +109,7 @@ class TomogramCoveragePlanner(object):
 
         # Initialize the explored graph
         self.explored = self.initExplorationGraph()
-        self.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE.pcd", 0.2)
+        self.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd", 0.2)
         # self.layer_modes = self.compute_layer_modes()
 
     def initExplorationGraph(self):
@@ -530,6 +530,37 @@ class TomogramCoveragePlanner(object):
             print(f"Best pose: {best_pose}, Best orientation: {best_orientation}, Reward: {best_reward}")
 
         return best_idxs, best_angles, best_xyz
+    def compute_explored_voxels(self, candidate_points_xyz, angles):
+        """
+        Compute the explored voxels based on candidate points and raycasting.
+
+        Args:
+            candidate_points_xyz (np.ndarray): Candidate points in world coordinates.
+            angles (np.ndarray): Angles for each candidate point.
+
+        Returns:
+            cp.ndarray: Updated explored voxel grid.
+        """
+        
+        explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
+        candidate_points_xyz = candidate_points_xyz + np.array([0,0,1])  # Adjust candidate points for z-axis
+        for i,candidate_pose in enumerate(candidate_points_xyz):
+            # Perform raycasting for the current pose
+            print(f"Exploring candidate pose: {candidate_pose}")
+            orientation = np.array([
+                [np.cos(angles[i]), -np.sin(angles[i]), 0],
+                [np.sin(angles[i]),  np.cos(angles[i]), 0],
+                [0, 0, 1]
+            ])
+            visible = get_visible_voxels_first_hit(
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.sensor_fov,self.sensor_range,
+                self.resolution, n_rays=50)
+            
+            for v in visible:
+                    local_idx = tuple(v - self.min_idx)
+                    explored_voxels[local_idx] = True
+        
+        return explored_voxels
 
     def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles):
         """
