@@ -5,13 +5,13 @@ import time
 
 # === Parameters ===
 voxel_size = 0.2
-fov_deg = 90
+fov_deg = 360
 max_range = 5.0
 resolution = 0.1
 n_rays = 50
 
 # === Load and voxelize point cloud ===
-pcd = o3d.io.read_point_cloud("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE.pcd")
+pcd = o3d.io.read_point_cloud("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd")
 pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
 voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
 
@@ -72,7 +72,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
     return visible
 
 # === Pose & Orientation ===
-candidate_pose = np.array([-3.08243036,  6.80760717,  0.16945899])
+candidate_pose = np.array([0,  0,  1])
 yaw = np.radians(0)
 orientation = np.array([
     [np.cos(yaw), -np.sin(yaw), 0],

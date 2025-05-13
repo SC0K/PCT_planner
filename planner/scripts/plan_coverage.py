@@ -71,7 +71,7 @@ def pct_plan():
     #     print("Trajectory published")
 # ################################################################
     # start_time = time.time()
-    computeNBVpoints()
+    # computeNBVpoints()
     # end_time = time.time()
     # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
@@ -83,9 +83,9 @@ def pct_plan():
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
-    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    print("Adjacency matrix:", adjacency)
-    np.save("adjacency_matrix.npy", adjacency)
+    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    # print("Adjacency matrix:", adjacency)
+    # np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 

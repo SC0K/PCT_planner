@@ -7,31 +7,243 @@ from visualization_msgs.msg import Marker, MarkerArray
 from planner_wrapper_coveragev2 import TomogramCoveragePlanner
 from config import Config
 import tf
-
-
+from nav_msgs.msg import Path
+from geometry_msgs.msg import PoseStamped, Quaternion, Point
+import math
+import tf.transformations as tf_trans
+from nav_msgs.msg import Odometry
+import open3d as o3d
 class LidarMappingNode:
     def __init__(self, planner):
         self.planner = planner
-        self.tf_listener = tf.TransformListener()  # Initialize TF listener
+        self.tf_listener = tf.TransformListener()  
 
-        # Load candidate points
-        candidate_points_xyz = np.load("reachable_sampled_points.npy")
+        self.candidate_points_xyz = np.load("reachable_sampled_points.npy")
         candidate_points_angles = np.load("reachable_sampled_points_angles.npy")
+        self.candidate_points_xyz = self.candidate_points_xyz + np.array([0,0,1])
+        self.current_candidate_xyz_idx = 0
 
         # Use CuPy arrays for target_voxels and scanned_voxels
-        self.target_voxels = planner.compute_explored_voxels(candidate_points_xyz, candidate_points_angles)
+        self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, candidate_points_angles)
         self.scanned_voxels = cp.zeros_like(self.target_voxels, dtype=cp.bool_)
 
-        # ROS Publishers for visualization
         self.target_voxels_pub = rospy.Publisher("target_voxels", MarkerArray, queue_size=10)
         self.scanned_voxels_pub = rospy.Publisher("scanned_voxels", MarkerArray, queue_size=10)
+        self.current_target_voxels_pub = rospy.Publisher("current_target_voxels", MarkerArray, queue_size=10)
 
-        # Subscribe to the LiDAR topic
         rospy.Subscriber("/point_cloud_filter/lidar_depth_camera/point_cloud_filtered", PointCloud2, self.lidar_callback)
 
-        # Publish the initial target voxels
         self.publish_target_voxels()
+    
+        rospy.Subscriber("/pct_path", Path, self.path_callback)
+        self.path_pub = rospy.Publisher("/path_ahead", Marker, queue_size=10)
 
+        self.goal_pub = rospy.Publisher("/goal", PoseStamped, queue_size=10)
+
+        rospy.Subscriber("/anymal/pose_in_sim_world", Odometry, self.robot_pose_callback)
+
+        self.current_path = []
+        self.current_waypoint_idx = 0
+        self.robot_position = None  # Store the robot's current position
+
+    def robot_pose_callback(self, odom_msg):
+        """
+        Callback to update the robot's current position from the /anymal/pose_in_sim_world topic.
+        """
+        self.robot_position = (
+            odom_msg.pose.pose.position.x,
+            odom_msg.pose.pose.position.y,
+            odom_msg.pose.pose.position.z
+        )
+
+    def path_callback(self, path_msg):
+        # Extract waypoints from the Path message
+        self.current_path = [(pose.pose.position.x, pose.pose.position.y, pose.pose.position.z) for pose in path_msg.poses]
+        self.current_waypoint_idx = 0
+        rospy.loginfo(f"Received new path with {len(self.current_path)} waypoints.")
+
+    def calculate_orientation(self, current_waypoint, next_waypoint):
+        """
+        Calculate the yaw angle (orientation) between two waypoints and convert it to a quaternion.
+        """
+        dx = next_waypoint[0] - current_waypoint[0]
+        dy = next_waypoint[1] - current_waypoint[1]
+        yaw = math.atan2(dy, dx)  # Calculate yaw angle
+        quaternion = tf_trans.quaternion_from_euler(0, 0, yaw)  # Convert yaw to quaternion
+        return Quaternion(*quaternion)
+
+    def publish_next_waypoint(self, distance_threshold=2.0):
+        if self.current_waypoint_idx >= len(self.current_path):
+            rospy.loginfo("Path completed.")
+            return
+    
+        if self.robot_position is None:
+            rospy.logwarn("Robot position not available. Skipping waypoint publishing.")
+            return
+    
+        current_waypoint = self.current_path[self.current_waypoint_idx]
+
+        try:
+            distance = math.sqrt(
+                (current_waypoint[0] - self.robot_position[0]) ** 2 +
+                (current_waypoint[1] - self.robot_position[1]) ** 2 +
+                (current_waypoint[2] - self.robot_position[2]) ** 2
+            )
+        except Exception as e:
+            rospy.logerr(f"Error calculating distance to waypoint: {e}")
+            return
+    
+        if distance > distance_threshold:
+            rospy.logwarn(f"Next waypoint is too far ({distance:.2f} meters). Waiting...")
+            return
+    
+        if self.current_waypoint_idx + 1 < len(self.current_path):
+            next_waypoint = self.current_path[self.current_waypoint_idx + 1]
+            orientation = self.calculate_orientation(current_waypoint, next_waypoint)
+        else:
+            orientation = Quaternion(0, 0, 0, 1)
+    
+        rospy.loginfo(f"Publishing waypoint: {current_waypoint}")
+        goal_msg = PoseStamped()
+        goal_msg.header.stamp = rospy.Time.now()
+        goal_msg.header.frame_id = "map"
+        goal_msg.pose.position.x = current_waypoint[0]
+        goal_msg.pose.position.y = current_waypoint[1]
+        goal_msg.pose.position.z = current_waypoint[2]
+        goal_msg.pose.orientation = orientation
+
+        self.goal_pub.publish(goal_msg)
+
+        if self.current_candidate_xyz_idx < len(self.candidate_points_xyz):
+            candidate_point = self.candidate_points_xyz[self.current_candidate_xyz_idx]
+            # rospy.loginfo(f"Robot position: {self.robot_position}")
+            # rospy.loginfo(f"Candidate point: {candidate_point}")
+    
+            try:
+                # distance_to_next_candidate = math.sqrt(
+                #     (self.robot_position[0] - candidate_point[0]) ** 2 +
+                #     (self.robot_position[1] - candidate_point[1]) ** 2 +
+                #     (self.robot_position[2] - candidate_point[2]) ** 2
+                # )
+                distance_to_next_candidate = math.sqrt(
+                    (self.robot_position[0] - candidate_point[0]) ** 2 +
+                    (self.robot_position[1] - candidate_point[1]) ** 2
+                )
+            except Exception as e:
+                rospy.logerr(f"Error calculating distance to next candidate: {e}")
+                return
+    
+            rospy.loginfo(f"Distance to next candidate: {distance_to_next_candidate:.2f}")
+    
+            if distance_to_next_candidate < 0.0:
+                scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.current_candidate_xyz_idx]
+    
+                unscanned_voxels_local = self.target_voxels_candidates[self.current_candidate_xyz_idx] & ~scanned_target_voxels_local
+                self.publish_current_target_voxels()
+    
+                if cp.any(unscanned_voxels_local):
+                    total_voxels_local = cp.sum(self.target_voxels_candidates[self.current_candidate_xyz_idx])
+                    unscanned_voxels_count = cp.sum(unscanned_voxels_local)
+                    unscanned_percentage = (unscanned_voxels_count / total_voxels_local) * 100
+    
+                    rospy.loginfo(f"Unscanned percentage at candidate point {self.current_candidate_xyz_idx}: {unscanned_percentage:.2f}%")
+    
+                    # Check if the unscanned percentage exceeds a threshold (e.g., 20%)
+                    if unscanned_percentage > 20.0:
+                        unscanned_indices = cp.argwhere(unscanned_voxels_local).get() 
+                        unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
+    
+                        rospy.loginfo(f"Largest unscanned patch size: {unscanned_patch_size} voxels")
+    
+                        if unscanned_patch_size > 10:  # Example threshold for patch size
+                            rospy.loginfo(f"Large unscanned patch detected at candidate point {self.current_candidate_xyz_idx}.")
+    
+                            unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
+    
+                            rospy.loginfo(f"Navigating to the center of the unscanned region: {unscanned_center}")
+    
+                            goal_msg = PoseStamped()
+                            goal_msg.header.stamp = rospy.Time.now()
+                            goal_msg.header.frame_id = "map"
+                            goal_msg.pose.position.x = unscanned_center[0]
+                            goal_msg.pose.position.y = unscanned_center[1]
+                            goal_msg.pose.position.z = unscanned_center[2]
+                            goal_msg.pose.orientation = Quaternion(0, 0, 0, 1)  # Default orientation
+    
+                            self.goal_pub.publish(goal_msg)
+    
+                            rospy.sleep(2.0)  # Adjust this, maybe wait for a specific condition instead
+    
+                            return 
+    
+                self.current_candidate_xyz_idx += 1
+                if self.current_candidate_xyz_idx >= len(self.candidate_points_xyz):
+                    self.current_candidate_xyz_idx = len(self.candidate_points_xyz) - 1
+    
+        # Move to the next waypoint
+        self.current_waypoint_idx += 1
+    def find_largest_continuous_patch(self, unscanned_indices):
+        """
+        Find the largest continuous patch of unscanned voxels.
+
+        Args:
+            unscanned_indices (np.ndarray): Indices of unscanned voxels.
+
+        Returns:
+            int: Size of the largest continuous patch.
+        """
+        from scipy.ndimage import label
+
+        # Create a binary grid for unscanned voxels
+        unscanned_grid = np.zeros(self.planner.grid_shape, dtype=bool)
+        for idx in unscanned_indices:
+            unscanned_grid[tuple(idx)] = True
+
+        # Perform connected-component analysis
+        labeled_grid, num_features = label(unscanned_grid)
+
+        # Find the size of each connected component
+        patch_sizes = np.bincount(labeled_grid.ravel())[1:]  # Exclude the background (label 0)
+
+        # Return the size of the largest patch
+        return np.max(patch_sizes) if len(patch_sizes) > 0 else 0
+    def detect_unscanned_region(self, roi_size=5.0):
+        """
+        Detect the unscanned region of the target voxels around the current position.
+    
+        Args:
+            roi_size (float): The size of the region of interest (ROI) in meters.
+    
+        Returns:
+            np.ndarray: Indices of unscanned voxels in the ROI.
+        """
+        if self.robot_position is None:
+            rospy.logwarn("Robot position not available. Cannot detect unscanned region.")
+            return None
+    
+        # Convert the robot's position to voxel indices
+        robot_voxel_idx = np.floor(np.array(self.robot_position) / self.planner.voxel_size).astype(int)
+    
+        # Define the ROI bounds in voxel indices
+        roi_voxel_radius = int(roi_size / self.planner.voxel_size)
+        min_idx = np.maximum(robot_voxel_idx - roi_voxel_radius, 0)
+        max_idx = np.minimum(robot_voxel_idx + roi_voxel_radius, np.array(self.planner.grid_shape) - 1)
+    
+        # Extract the ROI from target_voxels and scanned_voxels
+        target_roi = self.target_voxels[min_idx[0]:max_idx[0]+1, min_idx[1]:max_idx[1]+1, min_idx[2]:max_idx[2]+1]
+        scanned_roi = self.scanned_voxels[min_idx[0]:max_idx[0]+1, min_idx[1]:max_idx[1]+1, min_idx[2]:max_idx[2]+1]
+    
+        # Identify unscanned voxels in the ROI
+        unscanned_roi = target_roi & ~scanned_roi
+    
+        # Get the indices of unscanned voxels relative to the ROI
+        unscanned_indices = np.argwhere(cp.asnumpy(unscanned_roi))
+    
+        # Convert the indices to global voxel indices
+        global_unscanned_indices = unscanned_indices + min_idx
+    
+        rospy.loginfo(f"Detected {len(global_unscanned_indices)} unscanned voxels in the ROI.")
+        return global_unscanned_indices
     def publish_target_voxels(self):
         """Publish the total target voxels as a MarkerArray."""
         marker_array = MarkerArray()
@@ -57,7 +269,31 @@ class LidarMappingNode:
             marker.color.a = 0.5
             marker_array.markers.append(marker)
         self.target_voxels_pub.publish(marker_array)
-
+    def publish_current_target_voxels(self):
+        """Publish the current target voxels as a MarkerArray."""
+        marker_array = MarkerArray()
+        indices = cp.argwhere(self.target_voxels_candidates[self.current_candidate_xyz_idx]).get()
+        for i, idx in enumerate(indices):
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "current_target_voxels"
+            marker.id = i
+            marker.type = Marker.CUBE
+            marker.action = Marker.ADD
+            marker.pose.position.x = (idx[0] + self.planner.min_idx[0]) * self.planner.voxel_size
+            marker.pose.position.y = (idx[1] + self.planner.min_idx[1]) * self.planner.voxel_size
+            marker.pose.position.z = (idx[2] + self.planner.min_idx[2]) * self.planner.voxel_size
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = self.planner.voxel_size
+            marker.scale.y = self.planner.voxel_size
+            marker.scale.z = self.planner.voxel_size
+            marker.color.r = 0.0
+            marker.color.g = 0.0
+            marker.color.b = 1.0
+            marker.color.a = 0.5
+            marker_array.markers.append(marker)
+        self.current_target_voxels_pub.publish(marker_array)
     def publish_scanned_voxels(self):
         """Publish the scanned target voxels as a MarkerArray."""
         marker_array = MarkerArray()
@@ -83,60 +319,68 @@ class LidarMappingNode:
             marker.color.a = 0.5
             marker_array.markers.append(marker)
         self.scanned_voxels_pub.publish(marker_array)
-
+    
     def lidar_callback(self, msg):
         try:
             # Get the transformation from 'lidar' frame to 'map' frame
-            (trans, rot) = self.tf_listener.lookupTransform('map', 'lidar', rospy.Time(0))
+            (trans, rot) = self.tf_listener.lookupTransform('map', 'base', rospy.Time(0))
             transform_matrix = tf.transformations.quaternion_matrix(rot)
             transform_matrix[:3, 3] = trans
-
-            # Convert PointCloud2 to a NumPy array
-            points = np.array([[p[0], p[1], p[2], 1.0] for p in pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)])
-
-            # Transform points to the 'map' frame
-            points_transformed = (transform_matrix @ points.T).T[:, :3]
-
-            # Convert points to a CuPy array for GPU processing
+    
+            points = np.array([[p[0], p[1], p[2]] for p in pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)])
+    
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points)
+            voxel_size = 0.05 
+            pcd_downsampled = pcd.voxel_down_sample(voxel_size)
+    
+            # Transform the downsampled points to the 'map' frame
+            points_transformed = np.asarray(pcd_downsampled.points)
+            points_transformed = (transform_matrix[:3, :3] @ points_transformed.T).T + transform_matrix[:3, 3]
             points_cp = cp.array(points_transformed)
-
-            # Convert points to voxel indices using CuPy
             voxel_indices = cp.floor(points_cp / self.planner.voxel_size).astype(cp.int32) - cp.array(self.planner.min_idx)
+            # Add tolerance to the voxelization process
+            tolerance = 0.1  # tolerance in meters
+            tolerance_voxels = int(tolerance / self.planner.voxel_size)
+    
+            # Generate neighboring voxel indices within the tolerance range
+            offsets = cp.array([[dx, dy, dz] for dx in range(-tolerance_voxels, tolerance_voxels + 1)
+                                for dy in range(-tolerance_voxels, tolerance_voxels + 1)
+                                for dz in range(-tolerance_voxels, tolerance_voxels + 1)])
+            voxel_indices_with_tolerance = voxel_indices[:, None, :] + offsets[None, :, :]
+            voxel_indices_with_tolerance = voxel_indices_with_tolerance.reshape(-1, 3)
+    
+            valid_mask = cp.all((voxel_indices_with_tolerance >= 0) & (voxel_indices_with_tolerance < cp.array(self.planner.grid_shape)), axis=1)
+            valid_voxel_indices = voxel_indices_with_tolerance[valid_mask]
 
-            # Filter valid voxel indices (within grid bounds)
-            valid_mask = cp.all((voxel_indices >= 0) & (voxel_indices < cp.array(self.planner.grid_shape)), axis=1)
-            valid_voxel_indices = voxel_indices[valid_mask]
-
-            # Update the scanned voxel map
             for idx in valid_voxel_indices:
-                self.scanned_voxels[tuple(idx.get())] = True  # Convert CuPy index to NumPy for assignment
-
-            # Compare scanned voxels with target voxels using CuPy
+                self.scanned_voxels[tuple(idx.get())] = True  
+    
             scanned_target_voxels = self.scanned_voxels & self.target_voxels
             remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
-
-            # Log the results (convert to NumPy for logging)
             rospy.loginfo(f"Scanned target voxels: {cp.sum(scanned_target_voxels).get()}")
             rospy.loginfo(f"Remaining target voxels: {cp.sum(remaining_target_voxels).get()}")
+    
 
-            # Publish the scanned voxels for visualization
             self.publish_scanned_voxels()
-
+    
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
             rospy.logwarn(f"TF transformation failed: {e}")
-
+    def follow_path(self):
+        rate = rospy.Rate(4)  # 4 Hz
+        while not rospy.is_shutdown():
+            self.publish_next_waypoint(distance_threshold=1.0)  # Check distance before publishing
+            rate.sleep()
 
 if __name__ == "__main__":
     rospy.init_node("lidar_mapping_node")
 
-    # Initialize the planner
     cfg = Config()
     planner = TomogramCoveragePlanner(cfg)
 
-    # Load voxel map and tomogram
     planner.loadTomogram("building_2F_4R")
     planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd", 0.2)
 
-    # Start the node
     node = LidarMappingNode(planner)
+    node.follow_path()  # Start following the path
     rospy.spin()

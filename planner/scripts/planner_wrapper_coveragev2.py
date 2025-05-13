@@ -39,8 +39,11 @@ class TomogramCoveragePlanner(object):
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
+        self.sensor_range_analysis = 4
         self.sensor_fov = self.cfg.sensor.sensor_fov
         self.layer_modes = None
+        self.fov_vert = 360
+        self.fov_hor = 360
 
     def loadVoxelMap(self, pcd_file, voxel_size=0.2):
         """
@@ -86,7 +89,6 @@ class TomogramCoveragePlanner(object):
             self.slice_dh = float(data_dict['slice_dh'])
             self.map_dim = [tomogram.shape[2], tomogram.shape[3]]
             self.offset = np.array([int(self.map_dim[0] / 2), int(self.map_dim[1] / 2)], dtype=np.int32)
-            # self.sensor_range = int(round(self.cfg.sensor.sensor_range / self.resolution))
 
 
         self.trav = tomogram[0]
@@ -497,7 +499,7 @@ class TomogramCoveragePlanner(object):
                     reward, visible = calculate_rewards_raycast(
                         candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
                         self.hash_grid, self.explored_voxels, fov_deg=self.sensor_fov,
-                        max_range=self.sensor_range, resolution=self.resolution, n_rays=50
+                        max_range=self.sensor_range_analysis, resolution=self.resolution, n_rays=50
                     )
 
                     # Update the best pose and orientation if the reward is higher
@@ -544,6 +546,7 @@ class TomogramCoveragePlanner(object):
         
         explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
         candidate_points_xyz = candidate_points_xyz + np.array([0,0,1])  # Adjust candidate points for z-axis
+        explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
         for i,candidate_pose in enumerate(candidate_points_xyz):
             # Perform raycasting for the current pose
             print(f"Exploring candidate pose: {candidate_pose}")
@@ -553,14 +556,15 @@ class TomogramCoveragePlanner(object):
                 [0, 0, 1]
             ])
             visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.sensor_fov,self.sensor_range,
-                self.resolution, n_rays=50)
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.sensor_fov,self.fov_vert,self.fov_hor,
+                self.resolution, n_rays=60)
             
             for v in visible:
                     local_idx = tuple(v - self.min_idx)
                     explored_voxels[local_idx] = True
+                    explored_voxels_candidate[i][local_idx] = True
         
-        return explored_voxels
+        return explored_voxels, explored_voxels_candidate
 
     def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles):
         """
@@ -591,7 +595,7 @@ class TomogramCoveragePlanner(object):
                 [0, 0, 1]
             ])
             visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.sensor_fov,self.sensor_range,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range_analysis,
                 self.resolution, n_rays=50)
             
             for v in visible:
@@ -685,9 +689,9 @@ def calculate_rewards_raycast(candidate_pose, orientation, voxel_size, min_idx, 
                 break
     return reward, visible
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
-                                 fov_deg=90, max_range=10.0, resolution=0.2, n_rays=30):
-    az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
-    el = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
+                                 fov_deg_ver=90,fov_deg_hor=90, max_range=10.0, resolution=0.2, n_rays=30):
+    el = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
+    az = cp.linspace(-fov_deg_ver / 2, fov_deg_ver / 2, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())
