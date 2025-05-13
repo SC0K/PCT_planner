@@ -39,11 +39,11 @@ class TomogramCoveragePlanner(object):
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
-        self.sensor_range_analysis = 4
+        self.sensor_range_analysis = 2
         self.sensor_fov = self.cfg.sensor.sensor_fov
         self.layer_modes = None
-        self.fov_vert = 360
-        self.fov_hor = 360
+        self.fov_vert = 90
+        self.fov_hor = 80
 
     def loadVoxelMap(self, pcd_file, voxel_size=0.2):
         """
@@ -551,13 +551,13 @@ class TomogramCoveragePlanner(object):
             # Perform raycasting for the current pose
             print(f"Exploring candidate pose: {candidate_pose}")
             orientation = np.array([
-                [np.cos(angles[i]), -np.sin(angles[i]), 0],
-                [np.sin(angles[i]),  np.cos(angles[i]), 0],
+                [np.cos(np.radians(angles[i])), -np.sin(np.radians(angles[i])), 0],
+                [np.sin(np.radians(angles[i])),  np.cos(np.radians(angles[i])), 0],
                 [0, 0, 1]
             ])
             visible = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.sensor_fov,self.fov_vert,self.fov_hor,
-                self.resolution, n_rays=60)
+                self.resolution, n_rays=50)
             
             for v in visible:
                     local_idx = tuple(v - self.min_idx)
@@ -590,13 +590,13 @@ class TomogramCoveragePlanner(object):
             # Perform raycasting for the current pose
             print(f"Exploring candidate pose: {candidate_pose}")
             orientation = np.array([
-                [np.cos(angles[i]), -np.sin(angles[i]), 0],
-                [np.sin(angles[i]),  np.cos(angles[i]), 0],
+                [np.cos(np.radians(angles[i])), -np.sin(np.radians(angles[i])), 0],
+                [np.sin(np.radians(angles[i])),  np.cos(np.radians(angles[i])), 0],
                 [0, 0, 1]
             ])
             visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range_analysis,
-                self.resolution, n_rays=50)
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid, self.fov_vert,self.fov_hor, self.sensor_range_analysis,
+                self.resolution, n_rays=60)
             
             for v in visible:
                     local_idx = tuple(v - self.min_idx)
@@ -689,9 +689,9 @@ def calculate_rewards_raycast(candidate_pose, orientation, voxel_size, min_idx, 
                 break
     return reward, visible
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
-                                 fov_deg_ver=90,fov_deg_hor=90, max_range=10.0, resolution=0.2, n_rays=30):
-    el = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
-    az = cp.linspace(-fov_deg_ver / 2, fov_deg_ver / 2, n_rays)
+                                 fov_deg_ver=90,fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
+    az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
+    el = cp.linspace(-45, 0, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())

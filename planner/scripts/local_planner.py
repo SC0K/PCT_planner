@@ -20,7 +20,7 @@ class LidarMappingNode:
 
         self.candidate_points_xyz = np.load("reachable_sampled_points.npy")
         candidate_points_angles = np.load("reachable_sampled_points_angles.npy")
-        self.candidate_points_xyz = self.candidate_points_xyz + np.array([0,0,1])
+        self.candidate_points_xyz = self.candidate_points_xyz
         self.current_candidate_xyz_idx = 0
 
         # Use CuPy arrays for target_voxels and scanned_voxels
@@ -31,7 +31,8 @@ class LidarMappingNode:
         self.scanned_voxels_pub = rospy.Publisher("scanned_voxels", MarkerArray, queue_size=10)
         self.current_target_voxels_pub = rospy.Publisher("current_target_voxels", MarkerArray, queue_size=10)
 
-        rospy.Subscriber("/point_cloud_filter/lidar_depth_camera/point_cloud_filtered", PointCloud2, self.lidar_callback)
+        # rospy.Subscriber("/point_cloud_filter/lidar_depth_camera/point_cloud_filtered", PointCloud2, self.lidar_callback)
+        rospy.Subscriber("/depth_camera_front_upper/depth/color/points", PointCloud2, self.lidar_callback)
 
         self.publish_target_voxels()
     
@@ -135,7 +136,7 @@ class LidarMappingNode:
     
             rospy.loginfo(f"Distance to next candidate: {distance_to_next_candidate:.2f}")
     
-            if distance_to_next_candidate < 0.0:
+            if distance_to_next_candidate < 1.5:
                 scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.current_candidate_xyz_idx]
     
                 unscanned_voxels_local = self.target_voxels_candidates[self.current_candidate_xyz_idx] & ~scanned_target_voxels_local
@@ -162,20 +163,20 @@ class LidarMappingNode:
     
                             rospy.loginfo(f"Navigating to the center of the unscanned region: {unscanned_center}")
     
-                            goal_msg = PoseStamped()
-                            goal_msg.header.stamp = rospy.Time.now()
-                            goal_msg.header.frame_id = "map"
-                            goal_msg.pose.position.x = unscanned_center[0]
-                            goal_msg.pose.position.y = unscanned_center[1]
-                            goal_msg.pose.position.z = unscanned_center[2]
-                            goal_msg.pose.orientation = Quaternion(0, 0, 0, 1)  # Default orientation
+                            goal_msg2 = PoseStamped()
+                            goal_msg2.header.stamp = rospy.Time.now()
+                            goal_msg2.header.frame_id = "map"
+                            goal_msg2.pose.position.x = unscanned_center[0]
+                            goal_msg2.pose.position.y = unscanned_center[1]
+                            goal_msg2.pose.position.z = unscanned_center[2]
+                            goal_msg2.pose.orientation = Quaternion(0, 0, 0, 1)  # Default orientation
     
-                            self.goal_pub.publish(goal_msg)
+                            self.goal_pub.publish(goal_msg2)
     
                             rospy.sleep(2.0)  # Adjust this, maybe wait for a specific condition instead
     
                             return 
-    
+                self.goal_pub.publish(goal_msg)
                 self.current_candidate_xyz_idx += 1
                 if self.current_candidate_xyz_idx >= len(self.candidate_points_xyz):
                     self.current_candidate_xyz_idx = len(self.candidate_points_xyz) - 1
@@ -194,18 +195,14 @@ class LidarMappingNode:
         """
         from scipy.ndimage import label
 
-        # Create a binary grid for unscanned voxels
         unscanned_grid = np.zeros(self.planner.grid_shape, dtype=bool)
         for idx in unscanned_indices:
             unscanned_grid[tuple(idx)] = True
 
-        # Perform connected-component analysis
         labeled_grid, num_features = label(unscanned_grid)
 
-        # Find the size of each connected component
         patch_sizes = np.bincount(labeled_grid.ravel())[1:]  # Exclude the background (label 0)
 
-        # Return the size of the largest patch
         return np.max(patch_sizes) if len(patch_sizes) > 0 else 0
     def detect_unscanned_region(self, roi_size=5.0):
         """
@@ -221,25 +218,19 @@ class LidarMappingNode:
             rospy.logwarn("Robot position not available. Cannot detect unscanned region.")
             return None
     
-        # Convert the robot's position to voxel indices
         robot_voxel_idx = np.floor(np.array(self.robot_position) / self.planner.voxel_size).astype(int)
     
-        # Define the ROI bounds in voxel indices
         roi_voxel_radius = int(roi_size / self.planner.voxel_size)
         min_idx = np.maximum(robot_voxel_idx - roi_voxel_radius, 0)
         max_idx = np.minimum(robot_voxel_idx + roi_voxel_radius, np.array(self.planner.grid_shape) - 1)
     
-        # Extract the ROI from target_voxels and scanned_voxels
         target_roi = self.target_voxels[min_idx[0]:max_idx[0]+1, min_idx[1]:max_idx[1]+1, min_idx[2]:max_idx[2]+1]
         scanned_roi = self.scanned_voxels[min_idx[0]:max_idx[0]+1, min_idx[1]:max_idx[1]+1, min_idx[2]:max_idx[2]+1]
     
-        # Identify unscanned voxels in the ROI
         unscanned_roi = target_roi & ~scanned_roi
     
-        # Get the indices of unscanned voxels relative to the ROI
         unscanned_indices = np.argwhere(cp.asnumpy(unscanned_roi))
     
-        # Convert the indices to global voxel indices
         global_unscanned_indices = unscanned_indices + min_idx
     
         rospy.loginfo(f"Detected {len(global_unscanned_indices)} unscanned voxels in the ROI.")
@@ -322,8 +313,10 @@ class LidarMappingNode:
     
     def lidar_callback(self, msg):
         try:
-            # Get the transformation from 'lidar' frame to 'map' frame
-            (trans, rot) = self.tf_listener.lookupTransform('map', 'base', rospy.Time(0))
+            # Get the transformation from 'base' frame to 'map' frame
+            # "depth_camera_front_upper_depth_optical_frame" frame for depth camera
+            
+            (trans, rot) = self.tf_listener.lookupTransform('map', 'depth_camera_front_upper_depth_optical_frame', rospy.Time(0))
             transform_matrix = tf.transformations.quaternion_matrix(rot)
             transform_matrix[:3, 3] = trans
     
@@ -331,7 +324,7 @@ class LidarMappingNode:
     
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(points)
-            voxel_size = 0.05 
+            voxel_size = 0.2
             pcd_downsampled = pcd.voxel_down_sample(voxel_size)
     
             # Transform the downsampled points to the 'map' frame
@@ -340,7 +333,7 @@ class LidarMappingNode:
             points_cp = cp.array(points_transformed)
             voxel_indices = cp.floor(points_cp / self.planner.voxel_size).astype(cp.int32) - cp.array(self.planner.min_idx)
             # Add tolerance to the voxelization process
-            tolerance = 0.1  # tolerance in meters
+            tolerance = 0.2  # tolerance in meters
             tolerance_voxels = int(tolerance / self.planner.voxel_size)
     
             # Generate neighboring voxel indices within the tolerance range

@@ -33,8 +33,8 @@ for idx in shifted_indices:
 # === Raycasting ===
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
                                  fov_deg=90, max_range=10.0, resolution=0.2, n_rays=30):
-    az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
-    el = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
+    az = cp.linspace(-90 / 2, 90 / 2, n_rays)
+    el = cp.linspace(-1, 1 , n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())
@@ -72,7 +72,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
     return visible
 
 # === Pose & Orientation ===
-candidate_pose = np.array([0,  0,  1])
+candidate_pose = np.array([10,  0,  1])
 yaw = np.radians(0)
 orientation = np.array([
     [np.cos(yaw), -np.sin(yaw), 0],
