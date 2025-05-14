@@ -71,7 +71,7 @@ def pct_plan():
     #     print("Trajectory published")
 # ################################################################
     # start_time = time.time()
-    # computeNBVpoints()
+    computeNBVpoints()
     # end_time = time.time()
     # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
@@ -83,9 +83,9 @@ def pct_plan():
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
-    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
     # print("Adjacency matrix:", adjacency)
-    # np.save("adjacency_matrix.npy", adjacency)
+    np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
@@ -113,10 +113,11 @@ def pct_plan():
     np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
     np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
     updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
-    tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
+    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
+    np.save("shortest_path_idx.npy", tsp_path)
     publish_points(updated_sampled_points_xyz)
-    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
+    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
     print("TSP Path:", tsp_path)
     print("TSP Cost:", tsp_cost)

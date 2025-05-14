@@ -39,7 +39,7 @@ class TomogramCoveragePlanner(object):
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
-        self.sensor_range_analysis = 2
+        self.sensor_range_analysis = 5.5
         self.sensor_fov = self.cfg.sensor.sensor_fov
         self.layer_modes = None
         self.fov_vert = 90
@@ -499,7 +499,7 @@ class TomogramCoveragePlanner(object):
                     reward, visible = calculate_rewards_raycast(
                         candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
                         self.hash_grid, self.explored_voxels, fov_deg=self.sensor_fov,
-                        max_range=self.sensor_range_analysis, resolution=self.resolution, n_rays=50
+                        max_range=self.sensor_range, resolution=self.resolution, n_rays=50
                     )
 
                     # Update the best pose and orientation if the reward is higher
@@ -545,7 +545,7 @@ class TomogramCoveragePlanner(object):
         """
         
         explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
-        candidate_points_xyz = candidate_points_xyz + np.array([0,0,1])  # Adjust candidate points for z-axis
+        candidate_points_xyz = candidate_points_xyz + np.array([0,0,0.6])  # Adjust candidate points for z-axis
         explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
         for i,candidate_pose in enumerate(candidate_points_xyz):
             # Perform raycasting for the current pose
@@ -556,7 +556,7 @@ class TomogramCoveragePlanner(object):
                 [0, 0, 1]
             ])
             visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.sensor_fov,self.fov_vert,self.fov_hor,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range_analysis,
                 self.resolution, n_rays=50)
             
             for v in visible:
