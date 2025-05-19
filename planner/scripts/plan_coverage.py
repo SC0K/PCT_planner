@@ -71,7 +71,7 @@ def pct_plan():
     #     print("Trajectory published")
 # ################################################################
     # start_time = time.time()
-    computeNBVpoints()
+    # computeNBVpoints()
     # end_time = time.time()
     # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     

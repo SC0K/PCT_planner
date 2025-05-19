@@ -134,38 +134,42 @@ class LidarMappingNode:
     
             try:
                 distance_to_next_candidate = math.sqrt(
-                    (current_waypoint[0] - candidate_point[0]) ** 2 +
-                    (current_waypoint[1] - candidate_point[1]) ** 2 +
-                    (current_waypoint[2] - candidate_point[2]) ** 2
+                    (next_waypoint[0] - candidate_point[0]) ** 2 +
+                    (next_waypoint[1] - candidate_point[1]) ** 2 
+                    # (next_waypoint[2] - candidate_point[2]) ** 2
                 )
             except Exception as e:
                 rospy.logerr(f"Error calculating distance to next candidate: {e}")
                 return
     
-            rospy.loginfo(f"Current candidate index: {self.current_candidate_xyz_idx}")
-            if distance_to_next_candidate < 0.8:
+            # rospy.loginfo(f"Current candidate index: {self.current_candidate_xyz_idx}")
+            if distance_to_next_candidate < 0.5:
                 scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.current_candidate_xyz_idx]
     
                 unscanned_voxels_local = self.target_voxels_candidates[self.current_candidate_xyz_idx] & ~scanned_target_voxels_local
                 self.publish_current_target_voxels()
-                
+    
                 if cp.any(unscanned_voxels_local):
                     total_voxels_local = cp.sum(self.target_voxels_candidates[self.current_candidate_xyz_idx])
                     unscanned_voxels_count = cp.sum(unscanned_voxels_local)
                     unscanned_percentage = (unscanned_voxels_count / total_voxels_local) * 100
     
-                    rospy.loginfo(f"Unscanned percentage at candidate point {self.current_candidate_xyz_idx}: {unscanned_percentage:.2f}%")
+                    # rospy.loginfo(f"Unscanned percentage at candidate point {self.current_candidate_xyz_idx}: {unscanned_percentage:.2f}%")
     
                     if unscanned_percentage > 20.0:
                         unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
                         unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
     
-                        rospy.loginfo(f"Largest unscanned patch size: {unscanned_patch_size} voxels")
+                        # rospy.loginfo(f"Largest unscanned patch size: {unscanned_patch_size} voxels")
     
                         if unscanned_patch_size > 10:
                             rospy.loginfo(f"Large unscanned patch detected at candidate point {self.current_candidate_xyz_idx}.")
     
                             unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
+                            shift_distance = 1
+                            rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.current_candidate_xyz_idx])))[:3, :3]
+                            shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])  # Shift along the negative Z-axis
+                            unscanned_center += shift_vector
                             angle = self.candidate_points_angles[self.current_candidate_xyz_idx]
                             angle = math.radians(angle)
                             orientation = tf_trans.quaternion_from_euler(0, 0, angle)  # Roll = 0, Pitch = 0, Yaw = angle
@@ -174,19 +178,51 @@ class LidarMappingNode:
     
                             # Save the current global path pose
                             saved_pose = current_waypoint
-
-                            # Navigate to the unscanned region
-                            goal_msg2 = PoseStamped()
-                            goal_msg2.header.stamp = rospy.Time.now()
-                            goal_msg2.header.frame_id = "map"
-                            goal_msg2.pose.position.x = unscanned_center[0]
-                            goal_msg2.pose.position.y = unscanned_center[1]
-                            goal_msg2.pose.position.z = unscanned_center[2]
-                            goal_msg2.pose.orientation = orientation
     
-                            self.goal_pub.publish(goal_msg2)
-    
-                            rospy.sleep(2.0)  # Wait for the robot to reach the unscanned region
+                            # Navigate to the unscanned region and keep scanning until it is fully scanned
+                            while True:
+                                # Recalculate the unscanned voxels
+                                scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.current_candidate_xyz_idx]
+                                unscanned_voxels_local = self.target_voxels_candidates[self.current_candidate_xyz_idx] & ~scanned_target_voxels_local
+                            
+                                # Check if the unscanned area has been fully scanned
+                                if not cp.any(unscanned_voxels_local):
+                                    rospy.loginfo("Unscanned area has been fully scanned.")
+                                    break
+                            
+                                # Calculate the percentage of unscanned voxels
+                                total_voxels_local = cp.sum(self.target_voxels_candidates[self.current_candidate_xyz_idx])
+                                unscanned_voxels_count = cp.sum(unscanned_voxels_local)
+                                unscanned_percentage = (unscanned_voxels_count / total_voxels_local) * 100
+                            
+                                rospy.loginfo(f"Unscanned percentage: {unscanned_percentage:.2f}%")
+                            
+                                # Break if the unscanned percentage is below the threshold
+                                coverage_threshold = 10.0  # threshold in percentage
+                                if unscanned_percentage <= coverage_threshold:
+                                    rospy.loginfo(f"Unscanned area coverage is below the threshold ({coverage_threshold}%). Breaking loop.")
+                                    break
+                            
+                                # Recalculate the unscanned center dynamically
+                                unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
+                                unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
+                                rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.current_candidate_xyz_idx])))[:3, :3]
+                                shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0 ])  # Shift along the negative Z-axis
+                                unscanned_center += shift_vector
+                                rospy.loginfo(f"Updated unscanned center: {unscanned_center}")
+                            
+                                # Publish the goal to the updated unscanned center
+                                goal_msg2 = PoseStamped()
+                                goal_msg2.header.stamp = rospy.Time.now()
+                                goal_msg2.header.frame_id = "map"
+                                goal_msg2.pose.position.x = unscanned_center[0]
+                                goal_msg2.pose.position.y = unscanned_center[1]
+                                goal_msg2.pose.position.z = unscanned_center[2]
+                                goal_msg2.pose.orientation = orientation
+                            
+                                self.goal_pub.publish(goal_msg2)
+                            
+                                rospy.sleep(1.0)  # Wait for a short duration before checking again
     
                             # Navigate back to the saved pose
                             rospy.loginfo(f"Returning to the saved pose on the global path: {saved_pose}")
@@ -196,13 +232,14 @@ class LidarMappingNode:
                             return_msg.pose.position.x = saved_pose[0]
                             return_msg.pose.position.y = saved_pose[1]
                             return_msg.pose.position.z = saved_pose[2]
-                            return_msg.pose.orientation = Quaternion(*self.robot_orientation)    # TODO: Set the correct orientation
+                            return_msg.pose.orientation = Quaternion(*self.robot_orientation)  # Use the robot's current orientation
     
                             self.goal_pub.publish(return_msg)
     
-                            rospy.sleep(4.0)  # Wait for the robot to return to the global path
     
-                            return  # Exit this iteration to allow the robot to return to the global path
+                            # Increment the waypoint index to continue following the path
+                            self.current_waypoint_idx += 1
+                            return  # Exit this iteration to allow the robot to continue following the path
     
                 self.goal_pub.publish(goal_msg)
                 self.current_candidate_xyz_idx += 1
