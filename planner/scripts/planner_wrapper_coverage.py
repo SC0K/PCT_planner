@@ -5,6 +5,7 @@ import numpy as np
 import math
 from scipy.stats import mode
 from utils import *
+from scipy.spatial import cKDTree
 
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
@@ -292,6 +293,112 @@ class TomogramCoveragePlanner(object):
         return idx
     def sampleUniformPointsInSpace(self):
         """
+        Sample points using Poisson Disk Sampling to ensure uniform spatial coverage
+        with a minimum distance between candidate viewpoints.
+
+        Returns:
+            np.ndarray: Array of valid sampled points (s, x, y indices).
+            np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
+        """
+        # Project traversable 3D grid to 2D (top-down view)
+        traversable_mask = (self.trav < self.cost_barrier) & (self.elev_g > -90)
+        traversable_indices = np.argwhere(traversable_mask)
+        xy_coords = np.array([
+            [(x - self.offset[0]) * self.resolution + self.center[0],
+            (y - self.offset[1]) * self.resolution + self.center[1]]
+            for _, x, y in traversable_indices
+        ])
+
+        # Poisson disk sampling using Bridson's algorithm
+        def bridson_sampling(width, height, r, k=30):
+            cell_size = r / np.sqrt(2)
+            grid_width = int(np.ceil(width / cell_size))
+            grid_height = int(np.ceil(height / cell_size))
+            grid = -np.ones((grid_height, grid_width), dtype=int)
+            samples = []
+            active_list = []
+
+            def get_cell(p):
+                return int(p[1] / cell_size), int(p[0] / cell_size)
+
+            def in_bounds(p):
+                return 0 <= p[0] < width and 0 <= p[1] < height
+
+            def is_far_enough(p):
+                gi, gj = get_cell(p)
+                for i in range(max(gi - 2, 0), min(gi + 3, grid_height)):
+                    for j in range(max(gj - 2, 0), min(gj + 3, grid_width)):
+                        idx = grid[i, j]
+                        if idx != -1:
+                            if np.linalg.norm(samples[idx] - p) < r:
+                                return False
+                return True
+
+            # Initial sample
+            first_sample = np.random.uniform([0, 0], [width, height])
+            samples.append(first_sample)
+            gi, gj = get_cell(first_sample)
+            grid[gi, gj] = 0
+            active_list.append(0)
+
+            while active_list:
+                idx = np.random.choice(active_list)
+                base = samples[idx]
+                found = False
+                for _ in range(k):
+                    angle = np.random.uniform(0, 2 * np.pi)
+                    radius = np.random.uniform(r, 2 * r)
+                    offset = radius * np.array([np.cos(angle), np.sin(angle)])
+                    new_point = base + offset
+                    if in_bounds(new_point) and is_far_enough(new_point):
+                        samples.append(new_point)
+                        gi, gj = get_cell(new_point)
+                        grid[gi, gj] = len(samples) - 1
+                        active_list.append(len(samples) - 1)
+                        found = True
+                        break
+                if not found:
+                    active_list.remove(idx)
+
+            return np.array(samples)
+
+        # Fit bounding box
+        xy_min = xy_coords.min(axis=0)
+        xy_max = xy_coords.max(axis=0)
+        width, height = xy_max - xy_min
+        poisson_samples = bridson_sampling(width, height, r=1.5)
+        poisson_samples += xy_min
+
+        # Use k-d tree to snap Poisson samples to closest traversable locations
+        tree = cKDTree(xy_coords)
+        _, indices = tree.query(poisson_samples)
+        selected_indices = traversable_indices[indices]
+
+        # Remove duplicates
+            # Filter out points with the same x, y indices and the same exact height in the elevation map
+        unique_points = []
+        seen_xy = {}
+        for s, x, y in selected_indices:
+            xy_key = (x, y)
+            height = self.elev_g[s, x, y]
+            if xy_key not in seen_xy or np.abs(seen_xy[xy_key] - height) > 0.05:
+                unique_points.append([s, x, y])
+                seen_xy[xy_key] = height
+
+        unique_indices = np.array(unique_points, dtype=np.int32)
+
+        # Convert to map coordinates
+        sampled_xyz = np.empty((len(unique_indices), 3), dtype=np.float32)
+        for idx, (s, x, y) in enumerate(unique_indices):
+            map_x = (x - self.offset[0]) * self.resolution + self.center[0]
+            map_y = (y - self.offset[1]) * self.resolution + self.center[1]
+            map_z = self.elev_g[s, x, y]
+            sampled_xyz[idx] = [map_x, map_y, map_z]
+
+        return unique_indices, sampled_xyz
+
+    def sampleUniformPointsInSpace_idle(self):
+        """
         Sample points that are uniformly distributed in space with a fixed distance equal to the sensor range
         in the x and y directions, and a smaller fixed step in the vertical (slice) direction.
 
@@ -302,8 +409,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(1, int(1.5 / self.resolution))  # Step size in the x dimension
-        step_y = max(1, int(1.5 / self.resolution))  # Step size in the y dimension
+        step_x = max(1, int(1.0 / self.resolution))  # Step size in the x dimension
+        step_y = max(1, int(1.0 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -340,7 +447,7 @@ class TomogramCoveragePlanner(object):
             sampled_xyz[idx] = [map_x, map_y, map_z]
     
         return unique_indices, sampled_xyz
-    
+
     def sampleTraversablePoints_rad(self, num_samples):
         """
         Sample a uniform set of traversable points from the travel cost map.
@@ -410,7 +517,7 @@ class TomogramCoveragePlanner(object):
         """
         min_reward = 50
         finished = False
-        sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
+        sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace_idle()
         target_num = np.count_nonzero(~np.isnan(self.explored))
         candidate_points_idx = np.empty((0, 3), dtype=np.int32)  # For 3D indices (s, x, y)
         candidate_points_xyz = np.empty((0, 3), dtype=np.float32)  # For 3D coordinates (x, y, z)

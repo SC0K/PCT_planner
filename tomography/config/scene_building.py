@@ -4,8 +4,9 @@ from .scene import ScenePCD, SceneMap, SceneTrav
 class SceneBuilding():
     pcd = ScenePCD()
     # pcd.file_name = 'building2_9.pcd'
-    pcd.file_name = 'building_2F_4R.pcd'
+    # pcd.file_name = 'building_2F_4R.pcd'
     # pcd.file_name = 'building_LEE.pcd'
+    pcd.file_name = 'building_LEE_1F.pcd'
 
     map = SceneMap()
     map.resolution = 0.1

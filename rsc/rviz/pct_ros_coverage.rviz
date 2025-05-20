@@ -106,7 +106,7 @@ Visualization Manager:
       Queue Size: 10
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.029999999329447746
+      Size (m): 0.10000000149011612
       Style: Boxes
       Topic: /tomogram
       Unreliable: false
@@ -709,7 +709,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 39.489681243896484
+      Distance: 45.18653106689453
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -717,17 +717,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 5.359614849090576
-        Y: -2.767653465270996
-        Z: 4.810464859008789
+        X: -3.7624382972717285
+        Y: 2.838010549545288
+        Z: -2.8728203773498535
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5352024435997009
+      Pitch: 0.2602022886276245
       Target Frame: <Fixed Frame>
-      Yaw: 1.5854899883270264
+      Yaw: 1.0254991054534912
     Saved: ~
 Window Geometry:
   Displays:

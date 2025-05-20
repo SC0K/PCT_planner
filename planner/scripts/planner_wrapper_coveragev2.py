@@ -544,7 +544,8 @@ class TomogramCoveragePlanner(object):
             cp.ndarray: Updated explored voxel grid.
         """
         
-        explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
+        # explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
+        explored_voxels_max = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
         candidate_points_xyz = candidate_points_xyz + np.array([0,0,0.6])  # Adjust candidate points for z-axis
         explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
         for i,candidate_pose in enumerate(candidate_points_xyz):
@@ -558,13 +559,19 @@ class TomogramCoveragePlanner(object):
             visible = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range_analysis,
                 self.resolution, n_rays=50)
-            
+            # Maximum possible visibility
+            visible_max = get_visible_voxels_first_hit(
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, 360 ,10,
+                self.resolution, n_rays=50)
+            for v in visible_max:
+                local_idx = tuple(v - self.min_idx)
+                explored_voxels_max[local_idx] = True
             for v in visible:
                     local_idx = tuple(v - self.min_idx)
-                    explored_voxels[local_idx] = True
+                    # explored_voxels[local_idx] = True
                     explored_voxels_candidate[i][local_idx] = True
         
-        return explored_voxels, explored_voxels_candidate
+        return explored_voxels_max, explored_voxels_candidate
 
     def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles):
         """

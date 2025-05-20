@@ -268,37 +268,7 @@ class LidarMappingNode:
         patch_sizes = np.bincount(labeled_grid.ravel())[1:]  # Exclude the background (label 0)
 
         return np.max(patch_sizes) if len(patch_sizes) > 0 else 0
-    def detect_unscanned_region(self, roi_size=5.0):
-        """
-        Detect the unscanned region of the target voxels around the current position.
-    
-        Args:
-            roi_size (float): The size of the region of interest (ROI) in meters.
-    
-        Returns:
-            np.ndarray: Indices of unscanned voxels in the ROI.
-        """
-        if self.robot_position is None:
-            rospy.logwarn("Robot position not available. Cannot detect unscanned region.")
-            return None
-    
-        robot_voxel_idx = np.floor(np.array(self.robot_position) / self.planner.voxel_size).astype(int)
-    
-        roi_voxel_radius = int(roi_size / self.planner.voxel_size)
-        min_idx = np.maximum(robot_voxel_idx - roi_voxel_radius, 0)
-        max_idx = np.minimum(robot_voxel_idx + roi_voxel_radius, np.array(self.planner.grid_shape) - 1)
-    
-        target_roi = self.target_voxels[min_idx[0]:max_idx[0]+1, min_idx[1]:max_idx[1]+1, min_idx[2]:max_idx[2]+1]
-        scanned_roi = self.scanned_voxels[min_idx[0]:max_idx[0]+1, min_idx[1]:max_idx[1]+1, min_idx[2]:max_idx[2]+1]
-    
-        unscanned_roi = target_roi & ~scanned_roi
-    
-        unscanned_indices = np.argwhere(cp.asnumpy(unscanned_roi))
-    
-        global_unscanned_indices = unscanned_indices + min_idx
-    
-        rospy.loginfo(f"Detected {len(global_unscanned_indices)} unscanned voxels in the ROI.")
-        return global_unscanned_indices
+
     def publish_target_voxels(self):
         """Publish the total target voxels as a MarkerArray."""
         marker_array = MarkerArray()
@@ -436,7 +406,7 @@ if __name__ == "__main__":
     planner = TomogramCoveragePlanner(cfg)
 
     planner.loadTomogram("building_2F_4R")
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd", 0.2)
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE_1F.pcd", 0.2)
 
     node = LidarMappingNode(planner)
     node.follow_path()  # Start following the path

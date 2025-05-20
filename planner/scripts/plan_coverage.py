@@ -28,8 +28,9 @@ if args.scene == 'Spiral':
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
     # tomo_file = 'building2_9'
-    tomo_file = 'building_2F_4R'
+    # tomo_file = 'building_2F_4R'
     # tomo_file = 'building_LEE'
+    tomo_file = 'building_LEE_1F'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
     end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
 else:
@@ -83,9 +84,9 @@ def pct_plan():
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
-    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
     # print("Adjacency matrix:", adjacency)
-    np.save("adjacency_matrix.npy", adjacency)
+    # np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
@@ -116,7 +117,7 @@ def pct_plan():
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
     np.save("shortest_path_idx.npy", tsp_path)
-    publish_points(updated_sampled_points_xyz)
+    # publish_points(updated_sampled_points_xyz)
     # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
     print("TSP Path:", tsp_path)
