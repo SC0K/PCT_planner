@@ -698,7 +698,7 @@ def calculate_rewards_raycast(candidate_pose, orientation, voxel_size, min_idx, 
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
                                  fov_deg_ver=90,fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
     az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
-    el = cp.linspace(-45, 0, n_rays)
+    el = cp.linspace(-45, 5, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())
