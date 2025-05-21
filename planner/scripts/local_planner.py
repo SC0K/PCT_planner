@@ -31,6 +31,7 @@ class LidarMappingNode:
         self.candidate_path_idx = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/shortest_path_idx.npy")
         self.candidate_points_xyz = np.zeros_like(candidate_points_xyz)
         self.candidate_points_angles = np.zeros_like(candidate_points_angles)
+        self.hash_grid = self.planner.hash_grid
         for i,idx in enumerate(self.candidate_path_idx):
             self.candidate_points_xyz[i] = candidate_points_xyz[idx]
             self.candidate_points_angles[i] = candidate_points_angles[idx] + 90.0 # +90 degree to align with the coordinate of the map (building_2F_4R)     
@@ -360,7 +361,7 @@ class LidarMappingNode:
     
         tolerance_voxels = 1  # Set to 1 for 6-neighborhood, 2 for wider, etc.
         structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
-        dilated_target_voxels = cupyx.scipy.ndimage.binary_dilation(self.target_voxels, structure=structure)
+        dilated_target_voxels = cupyx.scipy.ndimage.binary_dilation(self.hash_grid, structure=structure)
 
         if just_added_indices.shape[0] > 0:
             just_added_indices_cp = cp.array(just_added_indices)
