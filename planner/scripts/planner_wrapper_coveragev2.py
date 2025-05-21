@@ -39,7 +39,7 @@ class TomogramCoveragePlanner(object):
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
-        self.sensor_range_analysis = 5.5
+        self.sensor_range_analysis = 5
         self.sensor_fov = self.cfg.sensor.sensor_fov
         self.layer_modes = None
         self.fov_vert = 90

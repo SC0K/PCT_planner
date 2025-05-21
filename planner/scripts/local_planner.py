@@ -9,6 +9,8 @@ from config import Config
 import tf
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
+import std_msgs.msg
+import sensor_msgs.point_cloud2 as pc2
 import math
 import tf.transformations as tf_trans
 from nav_msgs.msg import Odometry
@@ -33,12 +35,12 @@ class LidarMappingNode:
         self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, self.candidate_points_angles)
         self.scanned_voxels = cp.zeros_like(self.target_voxels, dtype=cp.bool_)
 
-        self.target_voxels_pub = rospy.Publisher("target_voxels", MarkerArray, queue_size=10)
-        self.scanned_voxels_pub = rospy.Publisher("scanned_voxels", MarkerArray, queue_size=10)
-        self.current_target_voxels_pub = rospy.Publisher("current_target_voxels", MarkerArray, queue_size=10)
+        self.target_voxels_pc_pub = rospy.Publisher("target_voxels_pc", PointCloud2, queue_size=10)
+        self.scanned_voxels_pc_pub = rospy.Publisher("scanned_voxels_pc", PointCloud2, queue_size=10)
+        self.current_target_voxels_pc_pub = rospy.Publisher("current_target_voxels_pc", PointCloud2, queue_size=10)
 
         # rospy.Subscriber("/point_cloud_filter/lidar_depth_camera/point_cloud_filtered", PointCloud2, self.lidar_callback)
-        rospy.Subscriber("/depth_camera_front_upper/depth/color/points", PointCloud2, self.lidar_callback)
+        rospy.Subscriber("/depth_camera_front_upper/point_cloud_self_filtered", PointCloud2, self.lidar_callback)
 
         self.publish_target_voxels()
     
@@ -51,7 +53,10 @@ class LidarMappingNode:
 
         self.current_path = []
         self.current_waypoint_idx = 0
-        self.robot_position = None  # Store the robot's current position
+        self.robot_position = None  
+        self.persistence_counter = {}  # key: tuple(idx), value: count
+        self.persistence_threshold = 3  # Number of times a voxel must be seen to be added as structure
+
 
     def robot_pose_callback(self, odom_msg):
         """
@@ -270,129 +275,127 @@ class LidarMappingNode:
         return np.max(patch_sizes) if len(patch_sizes) > 0 else 0
 
     def publish_target_voxels(self):
-        """Publish the total target voxels as a MarkerArray."""
-        marker_array = MarkerArray()
-        indices = cp.argwhere(self.target_voxels).get()  # Convert CuPy array to NumPy for visualization
-        for i, idx in enumerate(indices):
-            marker = Marker()
-            marker.header.frame_id = "map"
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = "target_voxels"
-            marker.id = i
-            marker.type = Marker.CUBE
-            marker.action = Marker.ADD
-            marker.pose.position.x = (idx[0] + self.planner.min_idx[0]) * self.planner.voxel_size
-            marker.pose.position.y = (idx[1] + self.planner.min_idx[1]) * self.planner.voxel_size
-            marker.pose.position.z = (idx[2] + self.planner.min_idx[2]) * self.planner.voxel_size
-            marker.pose.orientation.w = 1.0
-            marker.scale.x = self.planner.voxel_size
-            marker.scale.y = self.planner.voxel_size
-            marker.scale.z = self.planner.voxel_size
-            marker.color.r = 0.0
-            marker.color.g = 1.0
-            marker.color.b = 0.0
-            marker.color.a = 0.5
-            marker_array.markers.append(marker)
-        self.target_voxels_pub.publish(marker_array)
+        """Publish the total target voxels as a PointCloud2."""
+        indices = cp.argwhere(self.target_voxels).get()
+        points = []
+        for idx in indices:
+            x = (idx[0] + self.planner.min_idx[0] + 0.5) * self.planner.voxel_size
+            y = (idx[1] + self.planner.min_idx[1] + 0.5) * self.planner.voxel_size
+            z = (idx[2] + self.planner.min_idx[2] + 0.5) * self.planner.voxel_size
+            points.append([x, y, z])
+        header = std_msgs.msg.Header()
+        header.stamp = rospy.Time.now()
+        header.frame_id = "map"
+        pc2_msg = pc2.create_cloud_xyz32(header, points)
+        self.target_voxels_pc_pub.publish(pc2_msg)
+    
     def publish_current_target_voxels(self):
-        """Publish the current target voxels as a MarkerArray."""
-        marker_array = MarkerArray()
+        """Publish the current target voxels as a PointCloud2."""
         indices = cp.argwhere(self.target_voxels_candidates[self.current_candidate_xyz_idx]).get()
-        for i, idx in enumerate(indices):
-            marker = Marker()
-            marker.header.frame_id = "map"
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = "current_target_voxels"
-            marker.id = i
-            marker.type = Marker.CUBE
-            marker.action = Marker.ADD
-            marker.pose.position.x = (idx[0] + self.planner.min_idx[0]) * self.planner.voxel_size
-            marker.pose.position.y = (idx[1] + self.planner.min_idx[1]) * self.planner.voxel_size
-            marker.pose.position.z = (idx[2] + self.planner.min_idx[2]) * self.planner.voxel_size
-            marker.pose.orientation.w = 1.0
-            marker.scale.x = self.planner.voxel_size
-            marker.scale.y = self.planner.voxel_size
-            marker.scale.z = self.planner.voxel_size
-            marker.color.r = 0.0
-            marker.color.g = 0.0
-            marker.color.b = 1.0
-            marker.color.a = 0.5
-            marker_array.markers.append(marker)
-        self.current_target_voxels_pub.publish(marker_array)
+        points = []
+        for idx in indices:
+            x = (idx[0] + self.planner.min_idx[0] + 0.5) * self.planner.voxel_size
+            y = (idx[1] + self.planner.min_idx[1] + 0.5) * self.planner.voxel_size
+            z = (idx[2] + self.planner.min_idx[2] + 0.5) * self.planner.voxel_size
+            points.append([x, y, z])
+        header = std_msgs.msg.Header()
+        header.stamp = rospy.Time.now()
+        header.frame_id = "map"
+        pc2_msg = pc2.create_cloud_xyz32(header, points)
+        self.current_target_voxels_pc_pub.publish(pc2_msg)
+    
     def publish_scanned_voxels(self):
-        """Publish the scanned target voxels as a MarkerArray."""
-        marker_array = MarkerArray()
-        indices = cp.argwhere(self.scanned_voxels & self.target_voxels).get()  # Convert CuPy array to NumPy
-        for i, idx in enumerate(indices):
-            marker = Marker()
-            marker.header.frame_id = "map"
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = "scanned_voxels"
-            marker.id = i
-            marker.type = Marker.CUBE
-            marker.action = Marker.ADD
-            marker.pose.position.x = (idx[0] + self.planner.min_idx[0]) * self.planner.voxel_size
-            marker.pose.position.y = (idx[1] + self.planner.min_idx[1]) * self.planner.voxel_size
-            marker.pose.position.z = (idx[2] + self.planner.min_idx[2]) * self.planner.voxel_size
-            marker.pose.orientation.w = 1.0
-            marker.scale.x = self.planner.voxel_size
-            marker.scale.y = self.planner.voxel_size
-            marker.scale.z = self.planner.voxel_size
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
-            marker.color.a = 0.5
-            marker_array.markers.append(marker)
-        self.scanned_voxels_pub.publish(marker_array)
+        """Publish the scanned target voxels as a PointCloud2."""
+        indices = cp.argwhere(self.scanned_voxels & self.target_voxels).get()
+        points = []
+        for idx in indices:
+            x = (idx[0] + self.planner.min_idx[0] + 0.5) * self.planner.voxel_size
+            y = (idx[1] + self.planner.min_idx[1] + 0.5) * self.planner.voxel_size
+            z = (idx[2] + self.planner.min_idx[2] + 0.5) * self.planner.voxel_size
+            points.append([x, y, z])
+        header = std_msgs.msg.Header()
+        header.stamp = rospy.Time.now()
+        header.frame_id = "map"
+        pc2_msg = pc2.create_cloud_xyz32(header, points)
+        self.scanned_voxels_pc_pub.publish(pc2_msg)
     
     def lidar_callback(self, msg):
         try:
-            # Get the transformation from 'base' frame to 'map' frame
-            # "depth_camera_front_upper_depth_optical_frame" frame for depth camera
-            
             (trans, rot) = self.tf_listener.lookupTransform('map', 'depth_camera_front_upper_depth_optical_frame', rospy.Time(0))
             transform_matrix = tf.transformations.quaternion_matrix(rot)
             transform_matrix[:3, 3] = trans
-    
+
             points = np.array([[p[0], p[1], p[2]] for p in pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)])
-    
+
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(points)
             voxel_size = 0.2
             pcd_downsampled = pcd.voxel_down_sample(voxel_size)
-    
-            # Transform the downsampled points to the 'map' frame
+
             points_transformed = np.asarray(pcd_downsampled.points)
             points_transformed = (transform_matrix[:3, :3] @ points_transformed.T).T + transform_matrix[:3, 3]
             points_cp = cp.array(points_transformed)
+
             voxel_indices = cp.floor(points_cp / self.planner.voxel_size).astype(cp.int32) - cp.array(self.planner.min_idx)
-            # Add tolerance to the voxelization process
-            tolerance = 0.2  # tolerance in meters
+
+            tolerance = 0.2
             tolerance_voxels = int(tolerance / self.planner.voxel_size)
-    
-            # Generate neighboring voxel indices within the tolerance range
+
             offsets = cp.array([[dx, dy, dz] for dx in range(-tolerance_voxels, tolerance_voxels + 1)
                                 for dy in range(-tolerance_voxels, tolerance_voxels + 1)
                                 for dz in range(-tolerance_voxels, tolerance_voxels + 1)])
             voxel_indices_with_tolerance = voxel_indices[:, None, :] + offsets[None, :, :]
             voxel_indices_with_tolerance = voxel_indices_with_tolerance.reshape(-1, 3)
-    
+
             valid_mask = cp.all((voxel_indices_with_tolerance >= 0) & (voxel_indices_with_tolerance < cp.array(self.planner.grid_shape)), axis=1)
             valid_voxel_indices = voxel_indices_with_tolerance[valid_mask]
 
+            new_voxel_coords = []
+            new_points = []
+
             for idx in valid_voxel_indices:
-                self.scanned_voxels[tuple(idx.get())] = True  
-    
+                idx_np = tuple(idx.get())
+                self.scanned_voxels[idx_np] = True
+            
+                # # Persistence filter: count how many times this voxel has been seen as occupied
+                # if not self.planner.hash_grid[idx_np]:
+                #     if idx_np not in self.persistence_counter:
+                #         self.persistence_counter[idx_np] = 1
+                #     else:
+                #         self.persistence_counter[idx_np] += 1
+            
+                #     # Only add as new structure if seen enough times
+                #     if self.persistence_counter[idx_np] >= self.persistence_threshold:
+                #         global_idx = np.array(idx_np) + self.planner.min_idx
+                #         new_voxel_coords.append(global_idx)
+                #         center = (global_idx + 0.5) * self.planner.voxel_size
+                #         new_points.append(center)
+                #         self.target_voxels[idx_np] = True
+
             scanned_target_voxels = self.scanned_voxels & self.target_voxels
             remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
+
             rospy.loginfo(f"Scanned target voxels: {cp.sum(scanned_target_voxels).get()}")
             rospy.loginfo(f"Remaining target voxels: {cp.sum(remaining_target_voxels).get()}")
-    
 
             self.publish_scanned_voxels()
-    
+
+            # Update PCD with new structure points
+            if new_points:
+                new_pcd = o3d.geometry.PointCloud()
+                new_pcd.points = o3d.utility.Vector3dVector(np.array(new_points))
+
+                original_pcd_path = "/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd"
+                updated_pcd_path = "/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R_updated.pcd"
+
+                original_pcd = o3d.io.read_point_cloud(original_pcd_path)
+                combined_pcd = original_pcd + new_pcd
+                o3d.io.write_point_cloud(updated_pcd_path, combined_pcd)
+                rospy.loginfo("Updated point cloud with new structure points.")
+
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
             rospy.logwarn(f"TF transformation failed: {e}")
+
     def follow_path(self):
         rate = rospy.Rate(4)  # 4 Hz
         while not rospy.is_shutdown():
@@ -406,7 +409,7 @@ if __name__ == "__main__":
     planner = TomogramCoveragePlanner(cfg)
 
     planner.loadTomogram("building_2F_4R")
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE_1F.pcd", 0.2)
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd", 0.2)
 
     node = LidarMappingNode(planner)
     node.follow_path()  # Start following the path
