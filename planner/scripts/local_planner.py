@@ -20,7 +20,6 @@ class LidarMappingNode:
     def __init__(self, planner):
         self.planner = planner
         self.tf_listener = tf.TransformListener()  
-        self.current_path = []
         self.current_waypoint_idx = 0
         self.robot_position = None  
         self.persistence_counter = cp.zeros(self.planner.grid_shape, dtype=cp.uint16)
@@ -29,6 +28,8 @@ class LidarMappingNode:
         candidate_points_xyz = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points.npy")
         candidate_points_angles = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_angles.npy")
         self.candidate_path_idx = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/shortest_path_idx.npy")
+        self.path_sequence = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/segment_trajectory.npy", allow_pickle=True)
+        self.global_path = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/full_trajectory.npy")
         self.candidate_points_xyz = np.zeros_like(candidate_points_xyz)
         self.candidate_points_angles = np.zeros_like(candidate_points_angles)
         self.hash_grid = self.planner.hash_grid
@@ -55,7 +56,6 @@ class LidarMappingNode:
 
         self.publish_target_voxels()
     
-        rospy.Subscriber("/pct_path", Path, self.path_callback)
         self.path_pub = rospy.Publisher("/path_ahead", Marker, queue_size=10)
 
         self.goal_pub = rospy.Publisher("/goal", PoseStamped, queue_size=10)
@@ -82,12 +82,6 @@ class LidarMappingNode:
             odom_msg.pose.pose.orientation.w
         )
 
-    def path_callback(self, path_msg):
-        # Extract waypoints from the Path message
-        self.current_path = [(pose.pose.position.x, pose.pose.position.y, pose.pose.position.z) for pose in path_msg.poses]
-        self.current_waypoint_idx = 0
-        rospy.loginfo(f"Received new path with {len(self.current_path)} waypoints.")
-
     def calculate_orientation(self, current_waypoint, next_waypoint):
         """
         Calculate the yaw angle (orientation) between two waypoints and convert it to a quaternion.
@@ -99,7 +93,7 @@ class LidarMappingNode:
         return Quaternion(*quaternion)
 
     def publish_next_waypoint(self, distance_threshold=1.0):
-        if self.current_waypoint_idx >= len(self.current_path):
+        if self.current_waypoint_idx >= len(self.global_path):
             rospy.loginfo("Path completed.")
             return
     
@@ -107,7 +101,7 @@ class LidarMappingNode:
             rospy.logwarn("Robot position not available. Skipping waypoint publishing.")
             return
     
-        current_waypoint = self.current_path[self.current_waypoint_idx]
+        current_waypoint = self.global_path[self.current_waypoint_idx]
     
         try:
             distance = math.sqrt(
@@ -123,8 +117,8 @@ class LidarMappingNode:
             rospy.logwarn(f"Next waypoint is too far ({distance:.2f} meters). Waiting...")
             return
     
-        if self.current_waypoint_idx + 1 < len(self.current_path):
-            next_waypoint = self.current_path[self.current_waypoint_idx + 1]
+        if self.current_waypoint_idx + 1 < len(self.global_path):
+            next_waypoint = self.global_path[self.current_waypoint_idx + 1]
             orientation = self.calculate_orientation(current_waypoint, next_waypoint)
         else:
             orientation = Quaternion(0, 0, 0, 1)
@@ -189,7 +183,6 @@ class LidarMappingNode:
                             orientation = Quaternion(*orientation)
                             rospy.loginfo(f"Navigating to the center of the unscanned region: {unscanned_center}")
     
-                            # Save the current global path pose
                             saved_pose = current_waypoint
     
                             # Navigate to the unscanned region and keep scanning until it is fully scanned
