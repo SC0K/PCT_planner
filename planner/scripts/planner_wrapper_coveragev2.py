@@ -545,7 +545,7 @@ class TomogramCoveragePlanner(object):
         
         # explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
         explored_voxels_max = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
-        candidate_points_xyz = candidate_points_xyz + np.array([0,0,0.6])  # Adjust candidate points for z-axis
+        candidate_points_xyz = candidate_points_xyz
         explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
         for i,candidate_pose in enumerate(candidate_points_xyz):
             # Perform raycasting for the current pose
