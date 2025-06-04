@@ -28,9 +28,10 @@ if args.scene == 'Spiral':
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
     # tomo_file = 'building2_9'
-    tomo_file = 'building_2F_4R'
+    # tomo_file = 'building_2F_4R'
     # tomo_file = 'building_LEE'
     # tomo_file = 'building_LEE_1F'
+    tomo_file = '/experiments/2F_2*1'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
     end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
 else:
@@ -84,23 +85,24 @@ def pct_plan():
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
+    # adjacency = compute_weighted_euclidean_adjacency(candidate_points_xyz, z_weight=3.0)
+    # planner.use_quintic = False
     # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    # print("Adjacency matrix:", adjacency)
     # np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
 #     ## Optioal sometimes: make sure that the first candidate point is a valid view point (reachabl)
-    # i,j = 0, 1
-    # adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
-    # adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
-    # candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
-    # candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
-    # candidate_angles[[i, j]] = candidate_angles[[j, i]]
+    i,j = 0, -10
+    adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
+    adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
+    candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
+    candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
+    candidate_angles[[i, j]] = candidate_angles[[j, i]]
     # publish start point:
     start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
     print("Viewpoints:", candidate_points_idx)
-    # publish_points(start_point.reshape(1, 3), frame_id="map")
+    publish_points(start_point.reshape(1, 3), frame_id="map")
 
     
     # np.set_printoptions(threshold=np.inf)
@@ -115,10 +117,10 @@ def pct_plan():
     np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
     updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
-    tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
+    # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
+    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
     np.save("shortest_path_idx.npy", tsp_path)
     # publish_points(updated_sampled_points_xyz)
-    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
     print("TSP Path:", tsp_path)
     print("TSP Cost:", tsp_cost)
@@ -137,7 +139,7 @@ def pct_plan():
         rospy.logwarn("Failed to generate a full 3D trajectory")
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
-    explored_area, explored_cells = compute_explored_region(updated_sampled_points_idx)
+    explored_area, explored_cells = compute_explored_region(candidate_points_idx, candidate_angles)
     print(f"Explored Area: {explored_area:.2f} m^2")
     publish_explored_cells(
         explored_cells,
@@ -146,41 +148,68 @@ def pct_plan():
         planner.center,
         planner.offset
     )
-
-def compute_explored_region(points_idx):
+def compute_weighted_euclidean_adjacency(points_xyz, z_weight=2.0):
+    """
+    Compute an adjacency matrix using weighted Euclidean distance.
+    Args:
+        points_xyz (np.ndarray): (N, 3) array of candidate points.
+        z_weight (float): Weight for the z-direction.
+    Returns:
+        np.ndarray: (N, N) adjacency matrix.
+    """
+    N = points_xyz.shape[0]
+    adjacency = np.zeros((N, N), dtype=np.float32)
+    for i in range(N):
+        for j in range(N):
+            if i == j:
+                adjacency[i, j] = 0
+            else:
+                dx = points_xyz[i, 0] - points_xyz[j, 0]
+                dy = points_xyz[i, 1] - points_xyz[j, 1]
+                dz = (points_xyz[i, 2] - points_xyz[j, 2]) * z_weight
+                adjacency[i, j] = np.sqrt(dx**2 + dy**2 + dz**2)
+    return adjacency
+def compute_explored_region(points_idx, points_angles):
     """
     Compute the explored region based on the adjacency matrix and candidate points.
+    For multistory buildings, only count each (x, y, height) cell once.
     """
-    candidate_points_idx = np.load("reachable_sampled_points_idx.npy").astype(np.int32)
-    candidate_angles = np.load("reachable_sampled_points_angles.npy")
-    base_angles = [0]
     Explored_cells = planner.initExplorationGraph()
-    for point_index in points_idx:
+    for i, point_index in enumerate(points_idx):
         current_height = planner.elev_g[point_index[0], point_index[1], point_index[2]]
         same_height_layers = np.where(np.abs(planner.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.5)[0]
-        for base_angle in base_angles:
-            angles = np.deg2rad(np.arange(base_angle - planner.sensor_fov / 2, base_angle + planner.sensor_fov / 2, step=10))
-            for angle in angles:
-                x_min = point_index[1]
-                x_max = point_index[1] + math.floor(planner.sensor_range * np.cos(angle) / planner.resolution)
-                y_min = point_index[2]
-                y_max = point_index[2] + math.floor(planner.sensor_range * np.sin(angle) / planner.resolution)
-                x_step = 1 if x_max >= x_min else -1
-                y_step = 1 if y_max >= y_min else -1
+        base_angle = points_angles[i]
+        angles = np.deg2rad(np.arange(base_angle - planner.sensor_fov / 2, base_angle + planner.sensor_fov / 2, step=15))
+        for angle in angles:
+            x_min = point_index[1]
+            x_max = point_index[1] + math.floor(planner.sensor_range * np.cos(angle) / planner.resolution)
+            y_min = point_index[2]
+            y_max = point_index[2] + math.floor(planner.sensor_range * np.sin(angle) / planner.resolution)
+            x_step = 1 if x_max >= x_min else -1
+            y_step = 1 if y_max >= y_min else -1
 
-                for i_x in range(x_min, x_max + x_step, x_step): 
-                    stop = False
-                    for i_y in range(y_min, y_max + y_step, y_step): 
-                        if 0 <= i_x < planner.map_dim[0] and 0 <= i_y < planner.map_dim[1]:
-                            for layer in same_height_layers:  
-                                if Explored_cells[layer, i_x, i_y] == 0:
-                                    Explored_cells[layer, i_x, i_y] = 1
-                                if planner.trav[layer, i_x, i_y] == planner.cost_barrier:
-                                    stop = True
-                                    break
-                        if stop:
-                            break
-    explore_area = np.nansum(Explored_cells) * planner.resolution ** 2
+            for i_x in range(x_min, x_max + x_step, x_step): 
+                stop = False
+                for i_y in range(y_min, y_max + y_step, y_step): 
+                    if 0 <= i_x < planner.map_dim[0] and 0 <= i_y < planner.map_dim[1]:
+                        for layer in same_height_layers:  
+                            if Explored_cells[layer, i_x, i_y] == 0:
+                                Explored_cells[layer, i_x, i_y] = 1
+                            if planner.trav[layer, i_x, i_y] == planner.cost_barrier:
+                                stop = True
+                                break
+                    if stop:
+                        break
+
+    explored_set = set()
+    for s in range(Explored_cells.shape[0]):
+        for x in range(Explored_cells.shape[1]):
+            for y in range(Explored_cells.shape[2]):
+                if Explored_cells[s, x, y] > 0:
+                    h = planner.elev_g[s, x, y]
+                    key = (x, y, round(h, 2))  # round to avoid floating point issues
+                    explored_set.add(key)
+    explore_area = len(explored_set) * planner.resolution ** 2
     return explore_area, Explored_cells
 
 

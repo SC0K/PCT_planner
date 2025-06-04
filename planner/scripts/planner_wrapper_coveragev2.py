@@ -39,7 +39,7 @@ class TomogramCoveragePlanner(object):
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
-        self.sensor_range_analysis = 5
+        self.sensor_range_analysis = 4
         self.sensor_fov = self.cfg.sensor.sensor_fov
         self.layer_modes = None
         self.fov_vert = 90
@@ -112,7 +112,6 @@ class TomogramCoveragePlanner(object):
         # Initialize the explored graph
         self.explored = self.initExplorationGraph()
         self.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd", 0.2)
-        # self.layer_modes = self.compute_layer_modes()
 
     def initExplorationGraph(self):
         """
@@ -561,7 +560,7 @@ class TomogramCoveragePlanner(object):
                 self.resolution, n_rays=50)
             # Maximum possible visibility
             visible_max = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, 360 ,10,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, 360 , 10,
                 self.resolution, n_rays=50)
             for v in visible_max:
                 local_idx = tuple(v - self.min_idx)

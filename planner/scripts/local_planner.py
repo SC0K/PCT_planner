@@ -16,6 +16,8 @@ import tf.transformations as tf_trans
 from nav_msgs.msg import Odometry
 import open3d as o3d
 import cupyx.scipy.ndimage
+import time
+
 class LidarMappingNode:
     def __init__(self, planner):
         self.planner = planner
@@ -33,9 +35,9 @@ class LidarMappingNode:
         self.candidate_points_xyz = np.zeros_like(candidate_points_xyz)
         self.candidate_points_angles = np.zeros_like(candidate_points_angles)
         self.hash_grid = self.planner.hash_grid
-        for i,idx in enumerate(self.candidate_path_idx):
+        for i, idx in enumerate(self.candidate_path_idx):
             self.candidate_points_xyz[i] = candidate_points_xyz[idx]
-            self.candidate_points_angles[i] = candidate_points_angles[idx] + 90.0 # +90 degree to align with the coordinate of the map (building_2F_4R)     
+            self.candidate_points_angles[i] = candidate_points_angles[idx]    
         
         self.latest_valid_voxel_indices = None
         # rospy.Timer(rospy.Duration(0.5), self.process_lidar_voxel_grid)  # 10 Hz processing
@@ -62,9 +64,13 @@ class LidarMappingNode:
         self.added_voxels_pc_pub = rospy.Publisher("added_voxels_pc", PointCloud2, queue_size=10)
 
         rospy.Subscriber("/anymal/pose_in_sim_world", Odometry, self.robot_pose_callback)
+        self.start_time = None
+        self.total_time = None
 
-
-
+        # avoiding the robot getting stuck at one place because the goal is not reachable
+        self.last_robot_pose = None
+        self.stuck_counter = 0
+        self.stuck_threshold = 10
 
     def robot_pose_callback(self, odom_msg):
         """
@@ -81,6 +87,18 @@ class LidarMappingNode:
             odom_msg.pose.pose.orientation.z,
             odom_msg.pose.pose.orientation.w
         )
+    def is_robot_stuck(self):
+        """Check if the robot is stuck (position and orientation unchanged for several cycles)."""
+        current_pose = (self.robot_position, self.robot_orientation)
+        if self.last_robot_pose is not None:
+            pos_diff = np.linalg.norm(np.array(self.robot_position) - np.array(self.last_robot_pose[0]))
+            ori_diff = np.linalg.norm(np.array(self.robot_orientation) - np.array(self.last_robot_pose[1]))
+            if pos_diff < 1e-3 and ori_diff < 1e-3:
+                self.stuck_counter += 1
+            else:
+                self.stuck_counter = 0
+        self.last_robot_pose = current_pose
+        return self.stuck_counter >= self.stuck_threshold
 
     def calculate_orientation(self, current_waypoint, next_waypoint):
         """
@@ -95,6 +113,12 @@ class LidarMappingNode:
     def publish_next_waypoint(self, distance_threshold=1.0):
         if self.current_waypoint_idx >= len(self.global_path):
             rospy.loginfo("Path completed.")
+            if self.start_time is not None:
+                if self.total_time is None:
+                    self.total_time = time.time() - self.start_time
+                    rospy.loginfo(f"Total time taken to traverse the path: {self.total_time:.2f} seconds")
+            percentage_scanned = cp.sum(self.scanned_voxels & self.target_voxels).get() / cp.sum(self.target_voxels).get() * 100
+            rospy.loginfo(f"Percentage of target voxels scanned: {percentage_scanned:.2f}%")
             return
     
         if self.robot_position is None:
@@ -121,6 +145,7 @@ class LidarMappingNode:
             next_waypoint = self.global_path[self.current_waypoint_idx + 1]
             orientation = self.calculate_orientation(current_waypoint, next_waypoint)
         else:
+            next_waypoint = None
             orientation = Quaternion(0, 0, 0, 1)
     
         rospy.loginfo(f"Publishing waypoint: {current_waypoint}")
@@ -134,7 +159,7 @@ class LidarMappingNode:
     
         self.goal_pub.publish(goal_msg)
     
-        if self.current_candidate_xyz_idx < len(self.candidate_points_xyz):
+        if self.current_candidate_xyz_idx < len(self.candidate_points_xyz) and next_waypoint is not None:
             candidate_point = self.candidate_points_xyz[self.current_candidate_xyz_idx]
             rospy.loginfo(f"Robot position: {self.robot_position}")
             rospy.loginfo(f"Candidate point: {candidate_point}")
@@ -163,7 +188,7 @@ class LidarMappingNode:
     
                     # rospy.loginfo(f"Unscanned percentage at candidate point {self.current_candidate_xyz_idx}: {unscanned_percentage:.2f}%")
     
-                    if unscanned_percentage > 20.0:
+                    if unscanned_percentage > 5.0:
                         unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
                         unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
     
@@ -173,7 +198,7 @@ class LidarMappingNode:
                             rospy.loginfo(f"Large unscanned patch detected at candidate point {self.current_candidate_xyz_idx}.")
     
                             unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-                            shift_distance = 1
+                            shift_distance = 2
                             rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.current_candidate_xyz_idx])))[:3, :3]
                             shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])  # Shift along the negative Z-axis
                             unscanned_center += shift_vector
@@ -181,10 +206,17 @@ class LidarMappingNode:
                             angle = math.radians(angle)
                             orientation = tf_trans.quaternion_from_euler(0, 0, angle)  # Roll = 0, Pitch = 0, Yaw = angle
                             orientation = Quaternion(*orientation)
-                            rospy.loginfo(f"Navigating to the center of the unscanned region: {unscanned_center}")
-    
                             saved_pose = current_waypoint
-    
+                            robot_pos = np.array(self.robot_position)
+                            unscanned_center[2] = robot_pos[2] # Keep the Z-coordinate same as robot's current position
+                            dist_to_unscanned_center = np.linalg.norm(robot_pos - unscanned_center)
+                            rospy.loginfo(f"Navigating to the center of the unscanned region: {unscanned_center}")
+                            if dist_to_unscanned_center < 0.5:  # 0.5m threshold, adjust as needed
+                                rospy.logwarn("Robot is already at the target pose but area is still unscanned. Skipping to next candidate.")
+                                self.current_candidate_xyz_idx += 1
+                                self.current_waypoint_idx += 1
+                                return
+                            
                             # Navigate to the unscanned region and keep scanning until it is fully scanned
                             while True:
                                 # Recalculate the unscanned voxels
@@ -208,6 +240,7 @@ class LidarMappingNode:
                                 if unscanned_percentage <= coverage_threshold:
                                     rospy.loginfo(f"Unscanned area coverage is below the threshold ({coverage_threshold}%). Breaking loop.")
                                     break
+
                             
                                 # Recalculate the unscanned center dynamically
                                 unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
@@ -215,6 +248,7 @@ class LidarMappingNode:
                                 rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.current_candidate_xyz_idx])))[:3, :3]
                                 shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0 ])  # Shift along the negative Z-axis
                                 unscanned_center += shift_vector
+                                unscanned_center[2] = robot_pos[2] 
                                 rospy.loginfo(f"Updated unscanned center: {unscanned_center}")
                             
                                 # Publish the goal to the updated unscanned center
@@ -253,6 +287,7 @@ class LidarMappingNode:
                     self.current_candidate_xyz_idx = len(self.candidate_points_xyz) - 1
     
         self.current_waypoint_idx += 1
+
     def find_largest_continuous_patch(self, unscanned_indices):
         """
         Find the largest continuous patch of unscanned voxels.
@@ -313,12 +348,16 @@ class LidarMappingNode:
         header.frame_id = "map"
         pc2_msg = pc2.create_cloud_xyz32(header, points)
         self.added_voxels_pc_pub.publish(pc2_msg)
+
     def publish_scanned_voxels(self):
         """Publish the scanned target voxels as a PointCloud2."""
-        indices = cp.argwhere(self.scanned_voxels & self.target_voxels).get()
+        # Use dilated scanned_voxels for tolerance
+        tolerance_voxels = 1  # Adjust as needed
+        structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
+        dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
+        indices = cp.argwhere(dilated_scanned_voxels & self.target_voxels).get()
         if indices.shape[0] == 0:
             return
-        # Vectorized conversion to xyz
         coords = (indices + self.planner.min_idx + 0.5) * self.planner.voxel_size
         points = coords.astype(np.float32)
         header = std_msgs.msg.Header()
@@ -352,7 +391,7 @@ class LidarMappingNode:
         if not hasattr(self, 'added_voxels'):
             self.added_voxels = []
     
-        tolerance_voxels = 1  # Set to 1 for 6-neighborhood, 2 for wider, etc.
+        tolerance_voxels = 2  # Set to 1 for 6-neighborhood, 2 for wider, etc.
         structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
         dilated_target_voxels = cupyx.scipy.ndimage.binary_dilation(self.hash_grid, structure=structure)
 
@@ -367,7 +406,9 @@ class LidarMappingNode:
                 idx_tuple = tuple(idx)
                 self.added_voxels.append(idx_tuple)
         
-        scanned_target_voxels = self.scanned_voxels & self.target_voxels
+        # Use dilated scanned_voxels for tolerance in coverage calculation
+        dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
+        scanned_target_voxels = dilated_scanned_voxels & self.target_voxels
         remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
     
         rospy.loginfo(f"Scanned target voxels: {cp.sum(scanned_target_voxels).get()}")
@@ -375,8 +416,10 @@ class LidarMappingNode:
     
         self.publish_scanned_voxels()
         self.publish_added_voxels()
+
     def follow_path(self):
-        rate = rospy.Rate(4)  # 4 Hz
+        self.start_time = time.time()
+        rate = rospy.Rate(5)  # 4 Hz
         while not rospy.is_shutdown():
             self.publish_next_waypoint(distance_threshold=1.0)  # Check distance before publishing
             rate.sleep()
@@ -387,8 +430,8 @@ if __name__ == "__main__":
     cfg = Config()
     planner = TomogramCoveragePlanner(cfg)
 
-    planner.loadTomogram("building_2F_4R")
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd", 0.2)
+    planner.loadTomogram("experiments/2F_2*1")
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.2)
 
     node = LidarMappingNode(planner)
     node.follow_path()  # Start following the path

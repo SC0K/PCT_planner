@@ -409,8 +409,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(1, int(1.0 / self.resolution))  # Step size in the x dimension
-        step_y = max(1, int(1.0 / self.resolution))  # Step size in the y dimension
+        step_x = max(1, int(0.8 / self.resolution))  # Step size in the x dimension
+        step_y = max(1, int(0.8 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -522,7 +522,7 @@ class TomogramCoveragePlanner(object):
         candidate_points_idx = np.empty((0, 3), dtype=np.int32)  # For 3D indices (s, x, y)
         candidate_points_xyz = np.empty((0, 3), dtype=np.float32)  # For 3D coordinates (x, y, z)
         candidate_points_angles = np.empty((0,), dtype=np.float32)  # For angles
-    
+        num=0
         while not finished:
             print("Explored cells:", np.nansum(self.explored))
             if np.nansum(self.explored) >= self.cfg.planner.coverage_threshold * target_num:
@@ -558,6 +558,8 @@ class TomogramCoveragePlanner(object):
             sampled_points_idx = np.delete(sampled_points_idx, best_reward_index, axis=0)
             sampled_points_xyz = np.delete(sampled_points_xyz, best_reward_index, axis=0)
             print(f"Best angle: {best_angle}, Percent of coverage: {np.nansum(self.explored) / target_num}")
+            num += 1
+            print(f"Number of candidate points: {num}")
     
         return candidate_points_idx,candidate_points_angles, candidate_points_xyz
 

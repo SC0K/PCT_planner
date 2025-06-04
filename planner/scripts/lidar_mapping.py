@@ -77,6 +77,6 @@ if __name__ == "__main__":
     planner = TomogramCoveragePlanner(cfg)
 
     # planner.loadTomogram("building_2F_4R")
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_2F_4R.pcd", 0.2)
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.2)
     node = LidarMapperNode(planner)
     rospy.spin()
