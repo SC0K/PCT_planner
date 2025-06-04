@@ -1,32 +1,4 @@
-# PCT Planner
-
-## Overview
-
-This is an implementation of paper **Efficient Global Navigational Planning in 3-D Structures Based on Point Cloud Tomography** (accepted by TMECH).
-It provides a highly efficient and extensible global navigation framework based on a tomographic understanding of the environment to navigate ground robots in multi-layer structures.
-
-**Demonstrations**: [pct_planner](https://byangw.github.io/projects/tmech2024/)
-
-![demo](rsc/docs/demo.png)
-
-## Citing
-
-If you use PCT Planner, please cite the following paper:
-
-[Efficient Global Navigational Planning in 3-D Structures Based on Point Cloud Tomography](https://ieeexplore.ieee.org/document/10531813)
-
-```bibtex
-@ARTICLE{yang2024efficient,
-  author={Yang, Bowen and Cheng, Jie and Xue, Bohuan and Jiao, Jianhao and Liu, Ming},
-  journal={IEEE/ASME Transactions on Mechatronics}, 
-  title={Efficient Global Navigational Planning in 3-D Structures Based on Point Cloud Tomography}, 
-  year={2024},
-  volume={},
-  number={},
-  pages={1-12}
-}
-```
-
+# Coverage Planner
 ## Prerequisites
 
 ### Environment
@@ -90,9 +62,3 @@ python3 plan.py --scene Spiral
 ```
 
 - The generated trajectory is visualized as ROS Path message in RViz.
-
-## License
-
-The source code is released under [GPLv2](http://www.gnu.org/licenses/) license.
-
-For commercial use, please contact Bowen Yang [byangar@connect.ust.hk](mailto:byangar@connect.ust.hk).
