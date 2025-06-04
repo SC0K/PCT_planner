@@ -5,31 +5,33 @@ import time
 
 # === Parameters ===
 voxel_size = 0.2
-fov_deg = 30
+fov_deg = 100
 max_range = 4
 resolution = 0.2
 n_rays = 20
-pcd_path = "/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd"
+pcd_path = "/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/3F_2*1.pcd"
 
-# === Load and shift point cloud ===
+# === Load and voxelize point cloud ===
 pcd = o3d.io.read_point_cloud(pcd_path)
 pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
-points = np.asarray(pcd.points)
-min_bound = points.min(axis=0)
-points -= min_bound
-pcd.points = o3d.utility.Vector3dVector(points)
+voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
 
-# === Voxelization ===
-voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-voxel_indices = np.unique(voxel_indices, axis=0)
-grid_shape = voxel_indices.max(axis=0) + 1
+voxel_centers = np.array([
+    voxel_grid.get_voxel_center_coordinate(v.grid_index)
+    for v in voxel_grid.get_voxels()
+])
+voxel_indices = np.floor(voxel_centers / voxel_size).astype(np.int32)
+min_idx = voxel_indices.min(axis=0)
+max_idx = voxel_indices.max(axis=0)
+grid_shape = max_idx - min_idx + 1
 
 # === Create occupancy grid ===
+shifted_indices = voxel_indices - min_idx
 hash_grid = cp.zeros(tuple(grid_shape), dtype=cp.bool_)
-voxel_cp = cp.asarray(voxel_indices)
-hash_grid[voxel_cp[:, 0], voxel_cp[:, 1], voxel_cp[:, 2]] = True
+for idx in shifted_indices:
+    hash_grid[tuple(idx)] = True
 
-# === RawKernel code (fixed flattening order) ===
+# === RawKernel code ===
 ray_hit_kernel_code = r'''
 extern "C" __global__
 void ray_first_hit(const int* idxs, const bool* valid, const bool* hash,
@@ -69,7 +71,7 @@ ray_first_hit_kernel = cp.RawKernel(ray_hit_kernel_code, "ray_first_hit")
 # === Raycasting function ===
 def raycast_first_hits(camera_pose, orientation):
     az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
-    el = cp.linspace(-30, 30, n_rays)
+    el = cp.linspace(-45, 5, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())
@@ -82,7 +84,10 @@ def raycast_first_hits(camera_pose, orientation):
     dirs = dirs @ cp.asarray(orientation.T)
 
     dists = cp.arange(0, max_range, resolution)
-    rays = dirs[:, cp.newaxis, :] * dists[cp.newaxis, :, None] + cp.asarray(camera_pose)
+    
+    # Shift camera pose from world to local (voxel grid) coordinates
+    cam_shifted = cp.asarray(camera_pose) - cp.asarray(min_idx) * voxel_size
+    rays = dirs[:, cp.newaxis, :] * dists[cp.newaxis, :, None] + cam_shifted
 
     idxs = cp.floor(rays / voxel_size).astype(cp.int32)
     valid = cp.all((idxs >= 0) & (idxs < cp.asarray(grid_shape)), axis=-1)
@@ -116,11 +121,12 @@ def raycast_first_hits(camera_pose, orientation):
     end = time.time()
     print(f"Raycasting time: {end - start:.4f} s")
 
-    visible_cpu = visible_hits[hit_flags.astype(cp.bool_)].get()
-    return set(map(tuple, visible_cpu)), rays.get(), hit_flags.get()
+    visible_np = visible_hits[hit_flags.astype(cp.bool_)].get()
+    visible_np += min_idx  # convert local to global indices
+    return set(map(tuple, visible_np)), rays.get(), hit_flags.get()
 
 # === Camera pose and orientation ===
-camera_pose = np.array([1.0, -2.0, 0.5]) + (-min_bound)
+camera_pose = np.array([6.80000019, 1.0         ,3.30000029])  # world coordinates
 yaw = np.radians(0)
 orientation = np.array([
     [np.cos(yaw), -np.sin(yaw), 0],
@@ -133,20 +139,17 @@ visible_voxels, rays_all, hits = raycast_first_hits(camera_pose, orientation)
 print(f"Visible voxel count: {len(visible_voxels)}")
 
 # === Visualization ===
-# Occupied voxel centers
-voxel_centers = (voxel_indices * voxel_size).astype(np.float32)
+vis_pcd = o3d.geometry.PointCloud()
+vis_pcd.points = o3d.utility.Vector3dVector(voxel_centers)
 colors = []
 for v in voxel_indices:
     if tuple(v) in visible_voxels:
         colors.append([1.0, 0.0, 0.0])  # red = visible
     else:
         colors.append([0.5, 0.5, 0.5])  # gray = not hit
-
-vis_pcd = o3d.geometry.PointCloud()
-vis_pcd.points = o3d.utility.Vector3dVector(voxel_centers)
 vis_pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
 
-# === Ray visualization (safe) ===
+# Optional ray visualization
 rays_vis = []
 visible_voxels_list = list(visible_voxels)
 visible_idx = 0
@@ -154,7 +157,7 @@ for i in range(hits.shape[0]):
     ray_pts = rays_all[i]
     if hits[i] == 1 and visible_idx < len(visible_voxels_list):
         hit_voxel = visible_voxels_list[visible_idx]
-        hit_coords = np.floor(ray_pts / voxel_size).astype(int)
+        hit_coords = np.floor(ray_pts / voxel_size).astype(int) + min_idx
         match = np.all(hit_coords == hit_voxel, axis=1)
         if np.any(match):
             end_idx = np.argmax(match)

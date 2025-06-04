@@ -28,7 +28,7 @@ if args.scene == 'Spiral':
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
     # tomo_file = 'building2_9'
-    tomo_file = 'building_2F_4R'
+    tomo_file = 'experiments/2F_2*1'
     # tomo_file = 'building_LEE'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
     end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
@@ -45,6 +45,7 @@ sampled_points_pub = rospy.Publisher("/sampled_points", PointCloud2, latch=True,
 
 def pct_plan():
     planner.loadTomogram(tomo_file)
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.2)
 
     # traj_3d = planner.plan(start_pos, end_pos)
     # if traj_3d is not None:
@@ -75,11 +76,11 @@ def pct_plan():
     # end_time = time.time()
     # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
-    # candidate_points_xyz = np.load("sampled_points.npy")
-    # candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
-    # candidate_angles = np.load("sampled_points_angles.npy")
-    # print("Candidate points:", candidate_points_idx.shape)
-    # publish_points(candidate_points_xyz)
+    candidate_points_xyz = np.load("sampled_points.npy")
+    candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
+    candidate_angles = np.load("sampled_points_angles.npy")
+    print("Candidate points:", candidate_angles.shape)
+    publish_points(candidate_points_xyz)
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
@@ -113,11 +114,11 @@ def pct_plan():
     # np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
     # np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
-    points_idx=np.load("reachable_sampled_points_idx.npy")
-    points_angles=np.load("reachable_sampled_points_angles.npy")
-    points_xyz=np.load("reachable_sampled_points_xyz.npy")
-    print(points_xyz.shape)
-    planner.compute_and_visualise_explored_voxels(points_xyz, points_angles)
+    # points_idx=np.load("reachable_sampled_points_idx.npy")
+    # points_angles=np.load("reachable_sampled_points_angles.npy")
+    # points_xyz=np.load("reachable_sampled_points_xyz.npy")
+    # print(points_xyz.shape)
+    planner.compute_and_visualise_explored_voxels(candidate_points_xyz, candidate_angles)
     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
     # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
     # publish_points(updated_sampled_points_xyz)
@@ -250,7 +251,7 @@ def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_point
 def computeNBVpoints():
     # Compute the next best view points
     candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
-    planner.visualizeExploredGrid()
+    # planner.visualizeExploredGrid()
     print("Candidate points:", candidate_points_xyz)
     np.save("sampled_points.npy", candidate_points_xyz)
     np.save("sampled_points_idx.npy", candidate_points_idx)
