@@ -62,9 +62,3 @@ python3 plan.py --scene Spiral
 ```
 
 - The generated trajectory is visualized as ROS Path message in RViz.
-
-## License
-
-The source code is released under [GPLv2](http://www.gnu.org/licenses/) license.
-
-For commercial use, please contact Bowen Yang [byangar@connect.ust.hk](mailto:byangar@connect.ust.hk).
