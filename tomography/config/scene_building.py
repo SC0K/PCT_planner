@@ -18,8 +18,8 @@ class SceneBuilding():
     trav.kernel_size = 7
     trav.interval_min = 0.50
     trav.interval_free = 0.65
-    trav.slope_max = 0.6
-    trav.step_max = 0.6      # This factor influnce largely on the traversibility of the stairs/ slopes
+    trav.slope_max = 0.2
+    trav.step_max = 0.3      # This factor influnce largely on the traversibility of the stairs/ slopes
     trav.standable_ratio = 0.10
     trav.cost_barrier = 50.0
     trav.safe_margin = 0.5

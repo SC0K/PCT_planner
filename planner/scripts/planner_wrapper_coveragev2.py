@@ -7,11 +7,48 @@ from scipy.stats import mode
 from utils import *
 import open3d as o3d
 import cupy as cp
+import sklearn.cluster
 
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
 
 rsg_root = os.path.dirname(os.path.abspath(__file__)) + '/../..'
+
+ray_hit_kernel_code = r'''
+extern "C" __global__
+void ray_first_hit(const int* idxs, const bool* valid, const bool* hash,
+                   int n_rays, int n_steps,
+                   int gx, int gy, int gz,
+                   int* visible_hits, int* hit_flags) {
+    int ray_id = blockDim.x * blockIdx.x + threadIdx.x;
+    if (ray_id >= n_rays) return;
+
+    for (int s = 0; s < n_steps; ++s) {
+        int base_idx = (ray_id * n_steps + s) * 3;
+        int valid_idx = ray_id * n_steps + s;
+
+        if (!valid[valid_idx]) continue;
+
+        int i = idxs[base_idx + 0];
+        int j = idxs[base_idx + 1];
+        int k = idxs[base_idx + 2];
+
+        if (i < 0 || i >= gx || j < 0 || j >= gy || k < 0 || k >= gz) continue;
+
+        int flat_idx = i * (gy * gz) + j * gz + k;
+
+        if (hash[flat_idx]) {
+            int out_idx = ray_id * 3;
+            visible_hits[out_idx + 0] = i;
+            visible_hits[out_idx + 1] = j;
+            visible_hits[out_idx + 2] = k;
+            hit_flags[ray_id] = 1;
+            return;
+        }
+    }
+}
+'''
+ray_first_hit_kernel = cp.RawKernel(ray_hit_kernel_code, "ray_first_hit")
 
 
 class TomogramCoveragePlanner(object):
@@ -182,6 +219,56 @@ class TomogramCoveragePlanner(object):
             trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
+    
+    def add_obstacle_points(self, world_points, cluster_eps=0.5, min_samples=3, z_buffer=0.3, xy_buffer=0.25):
+        """
+        Add new obstacle points to the tomograph by clustering and marking the lowest points in each cluster as untraversable.
+
+        Args:
+            world_points (np.ndarray): Nx3 array of new obstacle points in world coordinates.
+            cluster_eps (float): DBSCAN epsilon for clustering (meters).
+            min_samples (int): Minimum samples for DBSCAN.
+            z_buffer (float): Height buffer above the lowest point to mark as obstacle (meters).
+            xy_buffer (float): XY buffer around each obstacle (meters).
+        """
+        if world_points.shape[0] == 0:
+            return
+
+        # Cluster the points in XY using DBSCAN
+        clustering = sklearn.cluster.DBSCAN(eps=cluster_eps, min_samples=min_samples)
+        labels = clustering.fit_predict(world_points[:, :2])
+        unique_labels = set(labels)
+        if -1 in unique_labels:
+            unique_labels.remove(-1)  # Remove noise label
+
+        for label in unique_labels:
+            cluster_points = world_points[labels == label]
+            if cluster_points.shape[0] == 0:
+                continue
+
+            # Find the lowest Z in the cluster
+            min_z = np.min(cluster_points[:, 2])
+            lowest_points = cluster_points[np.abs(cluster_points[:, 2] - min_z) < z_buffer]
+
+            for pt in lowest_points:
+                # Convert world point to tomograph grid indices
+                idx = self.pos2idx_3D(pt)
+                idx = np.round(idx).astype(int)
+                s, x, y = idx
+
+                # Mark a region around (x, y) in all layers at or below this z as untraversable
+                xy_radius = int(np.ceil(xy_buffer / self.resolution))
+                for ds in range(self.elev_g.shape[0]):
+                    # Only mark if the elevation is below or close to the obstacle point
+                    elev = self.elev_g[ds, y, x]
+                    if abs(elev-pt[2]) <= z_buffer:
+                        x_min = max(0, x - xy_radius)
+                        x_max = min(self.elev_g.shape[2], x + xy_radius + 1)
+                        y_min = max(0, y - xy_radius)
+                        y_max = min(self.elev_g.shape[1], y + xy_radius + 1)
+                        self.trav[ds, y_min:y_max, x_min:x_max] = self.cost_barrier  # Mark as untraversabl
+        self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
+
         
     def compute_adjacency_matrix(self, sampled_points_idx):
         """
@@ -485,26 +572,25 @@ class TomogramCoveragePlanner(object):
             best_index = -1
 
             # Iterate over all candidate poses
-            for i, candidate_pose in enumerate(sampled_points_xyz):
+            for i, candidate_pose_world in enumerate(sampled_points_xyz):
+                candidate_pose_shifted = (candidate_pose_world - self.center)
+                candidate_pose_shifted = candidate_pose_shifted + self.offset * self.voxel_size
                 for yaw in yaw_angles:
-                    # Generate orientation matrix for the current yaw angle
                     orientation = np.array([
                         [np.cos(yaw), -np.sin(yaw), 0],
                         [np.sin(yaw),  np.cos(yaw), 0],
                         [0, 0, 1]
                     ])
 
-                    # Perform raycasting for the current pose and orientation
                     reward, visible = calculate_rewards_raycast(
-                        candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
+                        candidate_pose_shifted, orientation, self.voxel_size, self.min_idx, self.grid_shape,
                         self.hash_grid, self.explored_voxels, fov_deg=self.sensor_fov,
                         max_range=self.sensor_range, resolution=self.resolution, n_rays=50
                     )
 
-                    # Update the best pose and orientation if the reward is higher
                     if reward > best_reward:
                         best_reward = reward
-                        best_pose = candidate_pose
+                        best_pose = candidate_pose_world
                         best_orientation = orientation
                         best_visible = visible
                         best_index = i
@@ -695,7 +781,24 @@ def calculate_rewards_raycast(candidate_pose, orientation, voxel_size, min_idx, 
                 break
     return reward, visible
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
-                                 fov_deg_ver=90,fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
+                                 fov_deg_ver=90, fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
+    """
+    Get visible voxels using raycasting from a candidate pose. NOTE: The candidate_pose needs to be shifted to the voxel grid center.
+    Args:
+        candidate_pose (np.ndarray): Candidate pose (x, y, z).
+        orientation (np.ndarray): Orientation matrix (3x3).
+        voxel_size (float): Size of each voxel.
+        min_idx (np.ndarray): Minimum voxel indices.
+        grid_shape (tuple): Shape of the voxel grid.
+        hash_grid (cp.ndarray): Hash grid of occupied voxels.
+        fov_deg_ver (float): Vertical field of view in degrees.
+        fov_deg_hor (float): Horizontal field of view in degrees.
+        max_range (float): Maximum sensor range.
+        resolution (float): Raycasting resolution.
+        n_rays (int): Number of rays.
+    Returns:
+        set: Set of visible voxel indices.
+    """
     az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
     el = cp.linspace(-45, 5, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
@@ -706,27 +809,43 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
         cp.cos(el_flat) * cp.cos(az_flat),
         cp.cos(el_flat) * cp.sin(az_flat),
         cp.sin(el_flat)
-    ], axis=1)  # (R, 3)
+    ], axis=1)
     dirs = dirs @ cp.asarray(orientation.T)
 
     dists = cp.arange(0, max_range, resolution)
-    rays = dirs[:, cp.newaxis, :] * dists[cp.newaxis, :, None]
-    rays += cp.asarray(candidate_pose)
+    rays = dirs[:, cp.newaxis, :] * dists[cp.newaxis, :, None] + cp.asarray(candidate_pose)
 
     idxs = cp.floor(rays / voxel_size).astype(cp.int32) - cp.asarray(min_idx)
     valid = cp.all((idxs >= 0) & (idxs < cp.asarray(grid_shape)), axis=-1)
 
-    idxs_np = cp.asnumpy(idxs)
-    valid_np = cp.asnumpy(valid)
-    hash_np = cp.asnumpy(hash_grid)
+    n_rays_total, n_steps = idxs.shape[:2]
+    idxs_flat = idxs.reshape(-1, 3).ravel()
+    valid_flat = valid.ravel()
+    hash_flat = hash_grid.ravel()
 
-    visible = set()
-    for r in range(idxs_np.shape[0]):
-        for s in range(idxs_np.shape[1]):
-            if not valid_np[r, s]:
-                continue
-            i, j, k = idxs_np[r, s]
-            if hash_np[i, j, k]:
-                visible.add((i + min_idx[0], j + min_idx[1], k + min_idx[2]))
-                break 
-    return visible
+    visible_hits = cp.full((n_rays_total, 3), -1, dtype=cp.int32)
+    hit_flags = cp.zeros(n_rays_total, dtype=cp.int32)
+
+    grid = (n_rays_total + 255) // 256
+    block = 256
+
+    ray_first_hit_kernel(
+        (grid,), (block,),
+        (
+            idxs_flat,
+            valid_flat,
+            hash_flat,
+            cp.int32(n_rays_total),
+            cp.int32(n_steps),
+            cp.int32(grid_shape[0]),
+            cp.int32(grid_shape[1]),
+            cp.int32(grid_shape[2]),
+            visible_hits.ravel(),
+            hit_flags
+        )
+    )
+    cp.cuda.Device().synchronize()
+
+    visible_np = visible_hits[hit_flags.astype(cp.bool_)].get()
+    visible_np += min_idx  # convert to global index
+    return set(map(tuple, visible_np))

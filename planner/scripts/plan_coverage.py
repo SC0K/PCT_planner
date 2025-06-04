@@ -81,7 +81,7 @@ def pct_plan():
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
     candidate_angles = np.load("sampled_points_angles.npy")
     print("Candidate points:", candidate_points_idx.shape)
-    publish_points(candidate_points_xyz)
+    # publish_points(candidate_points_xyz)
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
@@ -90,54 +90,56 @@ def pct_plan():
     # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
     # np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
-#     adjacency_matrix = np.load("adjacency_matrix.npy")  
+    adjacency_matrix = np.load("adjacency_matrix.npy")  
 
 # #     ## Optioal sometimes: make sure that the first candidate point is a valid view point (reachabl)
-#     i,j = 0, -10
-#     adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
-#     adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
-#     candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
-#     candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
-#     candidate_angles[[i, j]] = candidate_angles[[j, i]]
-#     # publish start point:
-#     start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
-#     print("Viewpoints:", candidate_points_idx)
-#     publish_points(start_point.reshape(1, 3), frame_id="map")
+    # i,j = 0, -10
+    # adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
+    # adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
+    # candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
+    # candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
+    # candidate_angles[[i, j]] = candidate_angles[[j, i]]
+    # # publish start point:
+    # start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
+    # print("Viewpoints:", candidate_points_idx)
+    # publish_points(start_point.reshape(1, 3), frame_id="map")
 
     
 #     # np.set_printoptions(threshold=np.inf)
 #     # print("Adjacency matrix:", adjacency_matrix)  
 
-#     updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
-#     remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
-#     print("Updated adjacency matrix:", updated_adjacency_matrix.shape)
-#     np.save("reachable_adjacency_matrix.npy", updated_adjacency_matrix)
-#     np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
-#     np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
-#     np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
-#     updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
-#     # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
-#     # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
-#     tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
-#     np.save("shortest_path_idx.npy", tsp_path)
-#     # publish_points(updated_sampled_points_xyz)
-#     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
-#     print("TSP Path:", tsp_path)
-#     print("TSP Cost:", tsp_cost)
-#     global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
-#     print("Global path:", global_path)
-#     full_trajectory,segment_trajectory = generate_global_trajectory(global_path, planner)
-#     # Rearrange the candidate points to start from the first point in the global path
-#     candidate_points_xyz_path = candidate_points_xyz[tsp_path]
-#     np.save("candidate_points_xyz_path.npy", candidate_points_xyz_path)
-#     np.save("segment_trajectory.npy", segment_trajectory, allow_pickle=True)
-#     if len(full_trajectory) > 0:
-#         path_pub.publish(traj2ros(full_trajectory))
-#         np.save("full_trajectory.npy", full_trajectory)
-#         print("Full 3D trajectory published")
-#     else:
-#         rospy.logwarn("Failed to generate a full 3D trajectory")
+    updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
+    remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
+    print("Updated adjacency matrix:", updated_adjacency_matrix.shape)
+    np.save("reachable_adjacency_matrix.npy", updated_adjacency_matrix)
+    np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
+    np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
+    np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
+    publish_points(updated_sampled_points_xyz)
+    updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
+    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
+    # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
+    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
+    np.save("shortest_path_idx.npy", tsp_path)
+    # publish_points(updated_sampled_points_xyz)
+    ## TODO: recompute the explored region because some candidates that are not reachable are removed   
+    print("TSP Path:", tsp_path)
+    print("TSP Cost:", tsp_cost)
+    global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
+    print("Global path:", global_path)
+    full_trajectory,segment_trajectory = generate_global_trajectory(global_path, planner)
+    # Rearrange the candidate points to start from the first point in the global path
+    candidate_points_xyz_path = candidate_points_xyz[tsp_path]
+    np.save("candidate_points_xyz_path.npy", candidate_points_xyz_path)
+    np.save("segment_trajectory.npy", segment_trajectory, allow_pickle=True)
+    if len(full_trajectory) > 0:
+        path_pub.publish(traj2ros(full_trajectory))
+        np.save("full_trajectory.npy", full_trajectory)
+        print("Full 3D trajectory published")
+    else:
+        rospy.logwarn("Failed to generate a full 3D trajectory")
     full_trajectory = np.load("full_trajectory.npy")
+    path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
     explored_area, explored_cells = compute_explored_region(candidate_points_idx, candidate_angles)
@@ -172,7 +174,7 @@ def compute_weighted_euclidean_adjacency(points_xyz, z_weight=2.0):
     return adjacency
 def compute_explored_region(points_idx, points_angles):
     """
-    Compute the explored region based on the adjacency matrix and candidate points.
+    Compute the explored region using a fan-shaped sensor model (ray casting).
     For multistory buildings, only count each (x, y, height) cell once.
     """
     Explored_cells = planner.initExplorationGraph()
@@ -180,27 +182,28 @@ def compute_explored_region(points_idx, points_angles):
         current_height = planner.elev_g[point_index[0], point_index[1], point_index[2]]
         same_height_layers = np.where(np.abs(planner.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.5)[0]
         base_angle = points_angles[i]
-        angles = np.deg2rad(np.arange(base_angle - planner.sensor_fov / 2, base_angle + planner.sensor_fov / 2, step=15))
+        # Fan angles in radians
+        angles = np.deg2rad(np.arange(base_angle - planner.sensor_fov / 2,
+                                      base_angle + planner.sensor_fov / 2 + 1e-3,
+                                      step=5))
         for angle in angles:
-            x_min = point_index[1]
-            x_max = point_index[1] + math.floor(planner.sensor_range * np.cos(angle) / planner.resolution)
-            y_min = point_index[2]
-            y_max = point_index[2] + math.floor(planner.sensor_range * np.sin(angle) / planner.resolution)
-            x_step = 1 if x_max >= x_min else -1
-            y_step = 1 if y_max >= y_min else -1
-
-            for i_x in range(x_min, x_max + x_step, x_step): 
-                stop = False
-                for i_y in range(y_min, y_max + y_step, y_step): 
-                    if 0 <= i_x < planner.map_dim[0] and 0 <= i_y < planner.map_dim[1]:
-                        for layer in same_height_layers:  
-                            if Explored_cells[layer, i_x, i_y] == 0:
-                                Explored_cells[layer, i_x, i_y] = 1
-                            if planner.trav[layer, i_x, i_y] == planner.cost_barrier:
-                                stop = True
-                                break
+            for r in np.arange(0, planner.sensor_range, planner.resolution):
+                dx = r * np.cos(angle)
+                dy = r * np.sin(angle)
+                i_x = int(round(point_index[1] + dx / planner.resolution))
+                i_y = int(round(point_index[2] + dy / planner.resolution))
+                if 0 <= i_x < planner.map_dim[0] and 0 <= i_y < planner.map_dim[1]:
+                    stop = False
+                    for layer in same_height_layers:
+                        if Explored_cells[layer, i_x, i_y] == 0:
+                            Explored_cells[layer, i_x, i_y] = 1
+                        if planner.trav[layer, i_x, i_y] == planner.cost_barrier:
+                            stop = True
+                            break
                     if stop:
                         break
+                else:
+                    break
 
     explored_set = set()
     for s in range(Explored_cells.shape[0]):

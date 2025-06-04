@@ -177,7 +177,7 @@ class Tomography(object):
                 if 0 <= s < layers_g.shape[0] and 0 <= y < self.map_dim_y and 0 <= x < self.map_dim_x:
                     y_min, y_max = max(0, y - radius), min(self.map_dim_y, y + radius + 1)
                     x_min, x_max = max(0, x - radius), min(self.map_dim_x, x + radius + 1)
-                    layers_t[s, x_min:x_max, y_min:y_max] = 50
+                    layers_t[s, x_min:x_max, y_min:y_max] = 0.0
 
 
         map_file = os.path.splitext(self.pcd_file)[0]

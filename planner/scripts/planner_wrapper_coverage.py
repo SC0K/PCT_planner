@@ -77,7 +77,6 @@ class TomogramCoveragePlanner(object):
 
         # Initialize the explored graph
         self.explored = self.initExplorationGraph()
-        # self.layer_modes = self.compute_layer_modes()
 
     def initExplorationGraph(self):
         """
@@ -409,8 +408,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(1, int(0.8 / self.resolution))  # Step size in the x dimension
-        step_y = max(1, int(0.8 / self.resolution))  # Step size in the y dimension
+        step_x = max(2, int(1 / self.resolution))  # Step size in the x dimension
+        step_y = max(2, int(1 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -511,24 +510,39 @@ class TomogramCoveragePlanner(object):
     def nextBestView(self):
         """
         Calculate the reward for each sampled point based on the number of unseen cells in its neighborhood.
-    
         Returns:
             np.ndarray: Array of rewards for each sampled point.
         """
-        min_reward = 50
+        min_reward = 150
         finished = False
         sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace_idle()
         target_num = np.count_nonzero(~np.isnan(self.explored))
-        candidate_points_idx = np.empty((0, 3), dtype=np.int32)  # For 3D indices (s, x, y)
-        candidate_points_xyz = np.empty((0, 3), dtype=np.float32)  # For 3D coordinates (x, y, z)
-        candidate_points_angles = np.empty((0,), dtype=np.float32)  # For angles
-        num=0
+        candidate_points_idx = np.empty((0, 3), dtype=np.int32)
+        candidate_points_xyz = np.empty((0, 3), dtype=np.float32)
+        candidate_points_angles = np.empty((0,), dtype=np.float32)
+        num = 0
+    
         while not finished:
             print("Explored cells:", np.nansum(self.explored))
             if np.nansum(self.explored) >= self.cfg.planner.coverage_threshold * target_num:
                 break
     
-
+            # --- Filter out candidates that are already in explored regions ---
+            mask = []
+            for idx in range(sampled_points_idx.shape[0]):
+                s, x, y = sampled_points_idx[idx]
+                # Only keep if at least one layer at (x, y) is unexplored
+                if np.any(self.explored[:, x, y] == 0):
+                    mask.append(True)
+                else:
+                    mask.append(False)
+            mask = np.array(mask)
+            sampled_points_idx = sampled_points_idx[mask]
+            sampled_points_xyz = sampled_points_xyz[mask]
+            if sampled_points_idx.shape[0] == 0:
+                break
+            # ---------------------------------------------------------------
+    
             rewards, best_angles, explored_cells = calculate_rewards(
                 sampled_points_idx,
                 self.elev_g,
@@ -547,7 +561,6 @@ class TomogramCoveragePlanner(object):
                 finished = True
                 break
     
-            
             best_angle = best_angles[best_reward_index]
             best_explored_cells = explored_cells[best_reward_index]
     
@@ -561,32 +574,14 @@ class TomogramCoveragePlanner(object):
             num += 1
             print(f"Number of candidate points: {num}")
     
-        return candidate_points_idx,candidate_points_angles, candidate_points_xyz
+        return candidate_points_idx, candidate_points_angles, candidate_points_xyz
 
 from numba import njit, prange
 
 @njit(parallel=True)
 def calculate_rewards(sampled_points_idx, elev_g, trav, explored, sensor_range, sensor_fov, resolution, cost_barrier):
-    """
-    Calculate rewards for all candidate points in parallel, considering multiple base angles.
-
-    Args:
-        sampled_points_idx (np.ndarray): Array of candidate points (N x 3).
-        elev_g (np.ndarray): Elevation grid.
-        trav (np.ndarray): Traversability grid.
-        explored (np.ndarray): Explored cells grid.
-        sensor_range (float): Sensor range.
-        sensor_fov (float): Sensor field of view.
-        resolution (float): Map resolution.
-        cost_barrier (float): Cost barrier for traversability.
-
-    Returns:
-        np.ndarray: Rewards for each candidate point.
-        np.ndarray: Best base angles for each candidate point.
-        np.ndarray: Updated explored cells for each candidate point.
-    """
     num_points = sampled_points_idx.shape[0]
-    base_angles = [0, 90, 180, 270]  # Multiple base angles in degrees
+    base_angles = [0, 90, 180, 270]
     rewards = np.zeros(num_points, dtype=np.int32)
     best_angles = np.zeros(num_points, dtype=np.float32)
     explored_cells = np.zeros((num_points, *explored.shape), dtype=np.float32)
@@ -594,45 +589,44 @@ def calculate_rewards(sampled_points_idx, elev_g, trav, explored, sensor_range, 
     for i in prange(num_points):
         point_index = sampled_points_idx[i]
         current_height = elev_g[point_index[0], point_index[1], point_index[2]]
-
         same_height_layers = np.where(np.abs(elev_g[:, point_index[1], point_index[2]] - current_height) < 0.2)[0]
 
         max_reward = -1
         best_angle = 0
-
         best_explored_cells = np.zeros_like(explored)
 
         for base_angle in base_angles:
-            angles = np.deg2rad(np.arange(base_angle - sensor_fov / 2, base_angle + sensor_fov / 2, step=10))
+            angles = np.deg2rad(np.arange(base_angle - sensor_fov / 2, base_angle + sensor_fov / 2, step=5))
             temp_explored_cells = explored.copy()
             temp_reward = 0
 
             for angle in angles:
-                x_min = point_index[1]
-                x_max = point_index[1] + math.floor(sensor_range * np.cos(angle) / resolution)
-                y_min = point_index[2]
-                y_max = point_index[2] + math.floor(sensor_range * np.sin(angle) / resolution)
-                x_step = 1 if x_max >= x_min else -1
-                y_step = 1 if y_max >= y_min else -1
-
-                for i_x in range(x_min, x_max + x_step, x_step):
-                    stop = False
-                    for i_y in range(y_min, y_max + y_step, y_step):
-                        if 0 <= i_x < elev_g.shape[1] and 0 <= i_y < elev_g.shape[2]:
-                            for layer in same_height_layers:
-                                if temp_explored_cells[layer, i_x, i_y] == 0:
+                for r in np.arange(0, sensor_range, resolution):
+                    dx = r * math.cos(angle)
+                    dy = r * math.sin(angle)
+                    i_x = int(round(point_index[1] + dx / resolution))
+                    i_y = int(round(point_index[2] + dy / resolution))
+                    if 0 <= i_x < elev_g.shape[1] and 0 <= i_y < elev_g.shape[2]:
+                        stop = False
+                        counted = False  # Track if this (i_x, i_y) has been counted for reward
+                        for layer in same_height_layers:
+                            if temp_explored_cells[layer, i_x, i_y] == 0:
+                                temp_explored_cells[layer, i_x, i_y] = 1
+                                if not counted:
                                     temp_reward += 1
-                                    temp_explored_cells[layer, i_x, i_y] = 1
-                                if trav[layer, i_x, i_y] == cost_barrier:
-                                    stop = True
-                                    break
+                                    counted = True
+                            if trav[layer, i_x, i_y] == cost_barrier:
+                                stop = True
+                                break
                         if stop:
                             break
+                    else:
+                        break
 
             if temp_reward > max_reward:
                 max_reward = temp_reward
                 best_angle = base_angle
-                best_explored_cells[:] = temp_explored_cells 
+                best_explored_cells[:] = temp_explored_cells
 
         rewards[i] = max_reward
         best_angles[i] = best_angle
