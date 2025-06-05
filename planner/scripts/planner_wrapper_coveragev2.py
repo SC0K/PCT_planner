@@ -8,6 +8,9 @@ from utils import *
 import open3d as o3d
 import cupy as cp
 import sklearn.cluster
+import time
+import cupyx.scipy.ndimage as cp_ndimage
+
 
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
@@ -61,6 +64,7 @@ class TomogramCoveragePlanner(object):
         self.tomo_dir = rsg_root + self.cfg.wrapper.tomo_dir
 
         self.resolution = None
+        self.resolution_raycast = None
         self.center = None
         self.n_slice = None
         self.slice_h0 = None
@@ -93,6 +97,7 @@ class TomogramCoveragePlanner(object):
         pcd = o3d.io.read_point_cloud(pcd_file)
         pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
         voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
+        self.resolution_raycast = voxel_size
 
         voxel_centers = np.array([
             voxel_grid.get_voxel_center_coordinate(v.grid_index)
@@ -518,7 +523,9 @@ class TomogramCoveragePlanner(object):
         Explored voxels are shown in one color (e.g., red), and unexplored voxels are shown in another (e.g., gray).
         """
         # Convert the explored voxel grid to a NumPy array
-        explored_np = cp.asnumpy(self.explored_voxels)
+        explored_voxels = self.explored_voxels.copy()
+
+        explored_np = cp.asnumpy(explored_voxels)
     
         # Get the indices of all voxels
         voxel_indices = np.argwhere(explored_np)
@@ -541,82 +548,92 @@ class TomogramCoveragePlanner(object):
     
         # Visualize the point cloud
         o3d.visualization.draw_geometries([vis_pcd], window_name="Explored Grid")
-
-    def nextBestView(self):
+    def nextBestView(self, k_best=1):
         """
-        Calculate the next best view using the voxel map and raycasting across multiple orientations.
-        Iteratively selects the best candidate pose, updates the explored voxel map, and removes the selected candidate.
+        Select the next best views using batched GPU raycasting and choose the top-k poses by reward.
+        Applies masked dilation after each batch to simulate sensor footprint.
 
-        Returns:
-            list: List of tuples containing the best candidate poses and their orientations.
+        Args:
+            k_best (int): Number of top candidate viewpoints to select per iteration.
         """
-        min_reward = 10
+        import cupyx.scipy.ndimage as cp_ndimage
+
+        min_reward = 10  # Minimum reward threshold to consider a viewpoint valid
         best_idxs = []
         best_angles = []
         best_xyz = []
         finished = False
 
-        # Sample candidate points
         sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
-        sampled_points_xyz = sampled_points_xyz + np.array([0,0,0.6]) 
+        # sampled_points_xyz = sampled_points_xyz[:1]
+        # sampled_points_idx = sampled_points_idx[:1]
+        sampled_points_xyz = sampled_points_xyz + np.array([0, 0, 0.6])  # camera height offset
 
-        # Define multiple yaw angles (in radians) for testing orientations
-        yaw_angles = [0, 90, 180, 270]  # Example: 8 orientations
+        yaw_angles = [0, 90, 180, 270]
+        grid_shape = cp.asarray(self.hash_grid.shape)
+        min_idx_cp = cp.asarray(self.min_idx)
 
         while not finished and len(sampled_points_xyz) > 0:
-            best_reward = -1
-            best_pose = None
-            best_angle = 0
-            best_visible = None
-            best_index = -1
-
-            # Iterate over all candidate poses
-            for i, candidate_pose in enumerate(sampled_points_xyz):
+            pose_list, angle_list, pose_idx_map = [], [], []
+            for i, p in enumerate(sampled_points_xyz):
                 for yaw in yaw_angles:
-                    # Generate orientation matrix for the current yaw angle
-                    orientation = np.array([
-                        [np.cos(np.radians(yaw)), -np.sin(np.radians(yaw)), 0],
-                        [np.sin(np.radians(yaw)),  np.cos(np.radians(yaw)), 0],
-                        [0, 0, 1]
-                    ])
+                    pose_list.append(p)
+                    angle_list.append(yaw)
+                    pose_idx_map.append(i)
+            pose_list = np.array(pose_list)
 
-                    # Perform raycasting for the current pose and orientation
-                    reward, visible = calculate_rewards_raycast(
-                        candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
-                        self.hash_grid, self.explored_voxels, fov_deg=self.sensor_fov,
-                        max_range=self.sensor_range, resolution=self.resolution, n_rays=50
-                    )
+            rewards, visibles = self.batched_ray_reward(pose_list, angle_list)
 
-                    # Update the best pose and orientation if the reward is higher
-                    if reward > best_reward:
-                        best_reward = reward
-                        best_pose = candidate_pose
-                        best_angle = yaw
-                        best_visible = visible
-                        best_index = i
+            top_k_indices = np.argsort(rewards)[-k_best:][::-1]
+            top_k_indices = [i for i in top_k_indices if rewards[i] >= min_reward]
 
-            # Check if the best reward is below the minimum threshold
-            if best_reward < min_reward:
+            if len(top_k_indices) == 0:
                 finished = True
                 break
 
-            # Update explored voxels
-            for v in best_visible:
-                local_idx = tuple(v - self.min_idx)
-                self.explored_voxels[local_idx] = True
+            used_candidate_indices = set()
+            new_voxel_array = cp.zeros_like(self.explored_voxels, dtype=cp.bool_)
 
-            # Store the best pose and orientation
-            best_idxs.append(sampled_points_idx[best_index])
-            best_angles.append(best_angle)
-            best_xyz.append(best_pose)
+            for i in top_k_indices:
+                best_pose = pose_list[i]
+                best_angle = angle_list[i]
+                best_index = pose_idx_map[i]
+                best_visible = visibles[i]
 
-            # Remove the selected best candidate from the list
-            sampled_points_xyz = np.delete(sampled_points_xyz, best_index, axis=0)
-            print(f"number of candidate points: {len(best_angles)}")
-            # print(f"Best pose: {best_pose}, Best orientation: {best_angle}, Reward: {best_reward}")
-        best_xyz = np.array(best_xyz) - np.array([0,0,0.6])  # Adjust for z-axis
+                if best_index in used_candidate_indices:
+                    continue
+                used_candidate_indices.add(best_index)
 
-        return best_idxs, best_angles, best_xyz
+                best_idxs.append(sampled_points_idx[best_index])
+                best_angles.append(best_angle)
+                best_xyz.append(best_pose)
+
+                # Add visible voxels
+                v_np = np.array(list(best_visible)) - self.min_idx
+                v_cp = cp.asarray(v_np)
+                valid = cp.all((v_cp >= 0) & (v_cp < grid_shape), axis=1)
+                v_cp = v_cp[valid]
+                new_voxel_array[v_cp[:, 0], v_cp[:, 1], v_cp[:, 2]] = True
+
+            # Conservative dilation to fill FOV gaps
+            struct = cp.ones((3, 3, 3), dtype=cp.bool_)  # Full 3×3×3 cube
+            dilated = cp_ndimage.binary_dilation(new_voxel_array, structure=struct)
+            dilated = cp_ndimage.binary_dilation(dilated, structure=struct)
+
+            dilated = cp.logical_and(dilated, self.hash_grid)
+            self.explored_voxels = cp.logical_or(self.explored_voxels, dilated)
+
+            # Remove used candidate poses
+            keep_mask = np.ones(len(sampled_points_xyz), dtype=bool)
+            for idx in used_candidate_indices:
+                keep_mask[idx] = False
+            sampled_points_xyz = sampled_points_xyz[keep_mask]
+            sampled_points_idx = sampled_points_idx[keep_mask]
+
+        return best_idxs, best_angles, np.array(best_xyz) - np.array([0, 0, 0.6])
+
+
+
     def compute_explored_voxels(self, candidate_points_xyz, angles):
         """
         Compute the explored voxels based on candidate points and raycasting.
@@ -643,11 +660,11 @@ class TomogramCoveragePlanner(object):
             ])
             visible = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range_analysis,
-                self.resolution, n_rays=50)
+                self.resolution_raycast, n_rays=50)
             # Maximum possible visibility
             visible_max = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, self.fov_hor , self.sensor_range_analysis,
-                self.resolution, n_rays=50)
+                self.resolution_raycast, n_rays=50)
             for v in visible_max:
                 local_idx = tuple(v - self.min_idx)
                 explored_voxels_max[local_idx] = True
@@ -666,13 +683,14 @@ class TomogramCoveragePlanner(object):
             candidate_points_xyz (np.ndarray): Candidate camera poses in world coordinates.
             angles (np.ndarray): Yaw angles (degrees) corresponding to each candidate pose.
         """
+        import cupyx.scipy.ndimage as cp_ndimage
+
         # Initialize voxel grid to track which voxels have been explored
         candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.6])
         explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
 
         # Iterate through each candidate pose and perform raycasting
         for i, candidate_pose in enumerate(candidate_points_xyz):
-            # print(f"Raycasting from candidate pose: {candidate_pose}")
             orientation = np.array([
                 [np.cos(np.radians(angles[i])), -np.sin(np.radians(angles[i])), 0],
                 [np.sin(np.radians(angles[i])),  np.cos(np.radians(angles[i])), 0],
@@ -683,13 +701,17 @@ class TomogramCoveragePlanner(object):
             visible = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
                 self.hash_grid, self.fov_vert, self.fov_hor, self.sensor_range_analysis,
-                self.resolution, n_rays=60
+                self.resolution_raycast, n_rays=50
             )
 
             # Mark visible voxels as explored
             for v in visible:
                 local_idx = tuple(np.array(v) - self.min_idx)
                 explored_voxels[local_idx] = True
+
+        # Apply masked dilation
+        dilated = cp_ndimage.binary_dilation(explored_voxels, iterations=1)
+        explored_voxels = cp.logical_and(dilated, self.hash_grid)
 
         # Convert voxel indices and exploration state to NumPy
         explored_np = cp.asnumpy(explored_voxels)
@@ -714,6 +736,97 @@ class TomogramCoveragePlanner(object):
         o3d.visualization.draw_geometries([vis_pcd], window_name="Explored Voxel Map")
 
         return explored_voxels
+
+    def batched_ray_reward(self, candidate_poses, orientations_deg):
+        """
+        Compute the number of new (unexplored) voxels seen from each candidate pose and orientation.
+
+        Args:
+            candidate_poses (np.ndarray): Shape (N, 3), world coordinates.
+            orientations_deg (list[int]): Length N, yaw angles in degrees.
+
+        Returns:
+            rewards (List[int]): New voxel counts for each pose.
+            visible_voxels_list (List[Set[Tuple[int]]]): Visible voxels per pose.
+        """
+        fov_deg = self.sensor_fov
+        max_range = self.sensor_range
+        resolution = self.resolution_raycast
+        n_rays = 10
+
+        n = len(candidate_poses)
+        az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
+        el = cp.linspace(-45, 5, n_rays)
+        az_grid, el_grid = cp.meshgrid(az, el)
+        az_flat = cp.radians(az_grid.flatten())
+        el_flat = cp.radians(el_grid.flatten())
+        dirs_base = cp.stack([
+            cp.cos(el_flat) * cp.cos(az_flat),
+            cp.cos(el_flat) * cp.sin(az_flat),
+            cp.sin(el_flat)
+        ], axis=1)
+
+        dirs_all = []
+        for yaw_deg in orientations_deg:
+            yaw = np.radians(yaw_deg)
+            rot = np.array([
+                [np.cos(yaw), -np.sin(yaw), 0],
+                [np.sin(yaw),  np.cos(yaw), 0],
+                [0, 0, 1]
+            ])
+            dirs_all.append(dirs_base @ cp.asarray(rot.T))
+        dirs_all = cp.stack(dirs_all)
+
+        dists = cp.arange(0, max_range, resolution)
+        cam_shifted = cp.asarray(candidate_poses) - cp.asarray(self.min_idx) * self.voxel_size
+        rays = dirs_all[:, :, cp.newaxis, :] * dists[None, :, None] + cam_shifted[:, None, None, :]
+
+        idxs = cp.floor(rays / self.voxel_size).astype(cp.int32)
+        valid = cp.all((idxs >= 0) & (idxs < cp.asarray(self.grid_shape)), axis=-1)
+
+        n_total_rays = idxs.shape[0] * idxs.shape[1]
+        n_steps = idxs.shape[2]
+
+        idxs_flat = idxs.reshape(-1, 3).ravel()
+        valid_flat = valid.ravel()
+        hash_flat = self.hash_grid.ravel()
+
+        visible_hits = cp.full((n_total_rays, 3), -1, dtype=cp.int32)
+        hit_flags = cp.zeros((n_total_rays,), dtype=cp.int32)
+
+        grid = (n_total_rays + 255) // 256
+        block = 256
+        ray_first_hit_kernel(
+            (grid,), (block,),
+            (
+                idxs_flat,
+                valid_flat,
+                hash_flat,
+                cp.int32(n_total_rays),
+                cp.int32(n_steps),
+                cp.int32(self.grid_shape[0]), cp.int32(self.grid_shape[1]), cp.int32(self.grid_shape[2]),
+                visible_hits.ravel(),
+                hit_flags
+            )
+        )
+        cp.cuda.Device().synchronize()
+
+        visible_hits_np = visible_hits.get().reshape(n, -1, 3)
+        hit_flags_np = hit_flags.get().reshape(n, -1)
+        explored = cp.asnumpy(self.explored_voxels)
+
+        rewards = []
+        visible_voxels_list = []
+        for i in range(n):
+            hits_i = visible_hits_np[i][hit_flags_np[i] == 1] + self.min_idx
+            visible_set = set(map(tuple, hits_i))
+            reward = sum(1 for v in visible_set if not explored[v[0] - self.min_idx[0],
+                                                                v[1] - self.min_idx[1],
+                                                                v[2] - self.min_idx[2]])
+            visible_voxels_list.append(visible_set)
+            rewards.append(reward)
+
+        return rewards, visible_voxels_list
 
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
                                  fov_deg_ver=90, fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):

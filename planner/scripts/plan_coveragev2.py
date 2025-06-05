@@ -71,10 +71,10 @@ def pct_plan():
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
 # ################################################################
-    # start_time = time.time()
-    # computeNBVpoints()
-    # end_time = time.time()
-    # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
+    start_time = time.time()
+    computeNBVpoints()
+    end_time = time.time()
+    print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
@@ -256,36 +256,6 @@ def computeNBVpoints():
     np.save("sampled_points.npy", candidate_points_xyz)
     np.save("sampled_points_idx.npy", candidate_points_idx)
     np.save("sampled_points_angles.npy", candidate_angles)
-
-    # Publish sampled points
-    # candidate_points_idx = candidate_points_idx[:, [0, 2, 1]].astype(np.int32)  # Switch the order of x and y for planning and ensure integers
-
-    # Filter out points with the same x, y values in layers with the same mode heights
-    unique_points_idx = []
-    unique_points_xyz = []
-    unique_angles = []
-    seen_xy = {}
-    for idx, point in enumerate(candidate_points_idx):
-        s, x, y = point
-        s = int(s)
-        x = int(x)
-        y = int(y)
-        xy_key = (x, y)
-        height = planner.elev_g[s, x, y]
-        if xy_key not in seen_xy or np.abs(height - seen_xy[xy_key]) > 0.05:  
-            unique_points_idx.append(point)
-            unique_points_xyz.append(candidate_points_xyz[idx])  
-            unique_angles.append(candidate_angles[idx])  
-            seen_xy[xy_key] = planner.elev_g[s,x,y]
-
-    candidate_points_idx = np.array(unique_points_idx, dtype=np.int32)
-    candidate_points_xyz = np.array(unique_points_xyz, dtype=np.float32)
-    candidate_angles = np.array(unique_angles, dtype=np.float32)
-
-    # print("Filtered sampled points (indices):", candidate_points_idx)
-    # print("Filtered sampled points (xyz):", candidate_points_xyz)
-    # print("Filtered sampled points (angles):", candidate_angles)
-    # Save the sampled points to a file
     np.save("sampled_points.npy", candidate_points_xyz)
     np.save("sampled_points_idx.npy", candidate_points_idx)
     np.save("sampled_points_angles.npy", candidate_angles)
