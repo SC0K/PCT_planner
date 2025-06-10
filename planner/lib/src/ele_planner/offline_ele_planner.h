@@ -20,6 +20,13 @@ class OfflineElePlanner {
                const Eigen::MatrixXd& height_map,
                const Eigen::MatrixXd& ceiling, const Eigen::MatrixXd& ele_map,
                const Eigen::MatrixXd& grad_x, const Eigen::MatrixXd& grad_y);
+  void ReInitMap(const double a_start_cost_threshold,
+                     const double safe_cost_margin, const double resolution,
+                     const int num_layers, const double step_cost_weight,
+                     const Eigen::MatrixXd& cost_map,
+                     const Eigen::MatrixXd& height_map,
+                     const Eigen::MatrixXd& ceiling, const Eigen::MatrixXd& ele_map,
+                     const Eigen::MatrixXd& grad_x, const Eigen::MatrixXd& grad_y);             
   void InitPlanner(const double a_start_cost_threshold,
                    const double safe_cost_margin, const double resolution,
                    const int num_layers, const double step_cost_weight,

@@ -86,6 +86,8 @@ class LidarMappingNode:
         self.last_robot_pose = None
         self.stuck_counter = 0
         self.stuck_threshold = 10
+        self.use_dilation = False
+        self.dilation_size = 1   
 
         # State machine
         self.state = self.STATE_FOLLOW_PATH
@@ -222,98 +224,83 @@ class LidarMappingNode:
             if distance_to_next_candidate < 0.5:
                 scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.next_candidate_xyz_idx-1]
                 unscanned_voxels_local = self.target_voxels_candidates[self.next_candidate_xyz_idx-1] & ~scanned_target_voxels_local
-                # if cp.any(unscanned_voxels_local):
-                #     total_voxels_local = cp.sum(self.target_voxels_candidates[self.next_candidate_xyz_idx-1])
-                #     unscanned_voxels_count = cp.sum(unscanned_voxels_local)
-                #     unscanned_percentage = (unscanned_voxels_count / total_voxels_local) * 100
-                #     if unscanned_percentage > 5.0:
-                #         unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
-                #         unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
-                #         if unscanned_patch_size > 10:
-                #             unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-                #             shift_distance = self.coverage_shift_distance
-                #             rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])))[:3, :3]
-                #             shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])
-                #             unscanned_center += shift_vector
-                #             angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
-                #             orientation = tf_trans.quaternion_from_euler(0, 0, angle)
-                #             orientation = Quaternion(*orientation)
-                #             robot_pos = np.array(self.robot_position)
-                #             unscanned_center[2] = robot_pos[2]
-                #             self.coverage_target = unscanned_center
-                #             self.coverage_orientation = orientation
-                #             self.coverage_angle = angle
-                #             self.state = self.STATE_COVERAGE
-                #             return
+                if cp.any(unscanned_voxels_local):
+                    total_voxels_local = cp.sum(self.target_voxels_candidates[self.next_candidate_xyz_idx-1])
+                    unscanned_voxels_count = cp.sum(unscanned_voxels_local)
+                    unscanned_percentage = (unscanned_voxels_count / total_voxels_local) * 100
+                    if unscanned_percentage > 5.0:
+                        unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
+                        unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
+                        if unscanned_patch_size > 10:
+                            unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
+                            shift_distance = self.coverage_shift_distance
+                            rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])))[:3, :3]
+                            shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])
+                            unscanned_center += shift_vector
+                            angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
+                            orientation = tf_trans.quaternion_from_euler(0, 0, angle)
+                            orientation = Quaternion(*orientation)
+                            robot_pos = np.array(self.robot_position)
+                            unscanned_center[2] = robot_pos[2]
+                            self.coverage_target = unscanned_center
+                            self.coverage_orientation = orientation
+                            self.coverage_angle = angle
+                            self.state = self.STATE_COVERAGE
+                            return
                         
-
     def handle_coverage(self):
         if hasattr(self, 'added_voxels') and len(self.added_voxels) > 0:
             self.add_new_obstacles_to_tomograph()
-            
-        if self.coverage_target is None:
-            self.state = self.STATE_FOLLOW_PATH
-            return
 
-        # --- Timeout logic for coverage ---
-        if not hasattr(self, 'coverage_start_time') or self.coverage_start_time is None:
-            self.coverage_start_time = time.time()
-        coverage_timeout = 8.0  # seconds, adjust as needed
-
-        # Check reachability before publishing goal
-        if not self.is_pose_reachable(self.coverage_target):
-            rospy.logwarn("Coverage target is not reachable (too close to obstacle). Skipping to next candidate.")
+        # Always recompute the unscanned region and plan to its center
+        scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.next_candidate_xyz_idx-1]
+        unscanned_voxels_local = self.target_voxels_candidates[self.next_candidate_xyz_idx-1] & ~scanned_target_voxels_local
+        if not cp.any(unscanned_voxels_local):
+            rospy.loginfo("Unscanned area has been fully scanned.")
             self.state = self.STATE_FOLLOW_PATH
             self.current_waypoint_idx += 1
             self.coverage_start_time = None
             return
 
-        # Timeout: If robot cannot reach the target in time, skip
-        if time.time() - self.coverage_start_time > coverage_timeout:
-            rospy.logwarn("Coverage target timeout. Skipping to next candidate.")
+        unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
+        if unscanned_indices.shape[0] == 0:
+            rospy.loginfo("No unscanned voxels found in candidate region.")
             self.state = self.STATE_FOLLOW_PATH
             self.current_waypoint_idx += 1
             self.coverage_start_time = None
             return
 
+        # Compute the center of the largest unscanned patch
+        unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
         robot_pos = np.array(self.robot_position)
-        dist_to_unscanned_center = np.linalg.norm(robot_pos - self.coverage_target)
-        robot_ori = np.array(self.robot_orientation)
-        target_ori = np.array([self.coverage_orientation.x, self.coverage_orientation.y, self.coverage_orientation.z, self.coverage_orientation.w])
-        ori_diff = self.quaternion_distance(robot_ori, target_ori)
-        position_threshold = 0.5  # meters
-        orientation_threshold = 0.2  # radians (~11 degrees)
+        unscanned_center[2] = robot_pos[2]  # Keep robot at current height
 
-        if dist_to_unscanned_center < position_threshold and ori_diff < orientation_threshold:
-            scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.next_candidate_xyz_idx-1]
-            unscanned_voxels_local = self.target_voxels_candidates[self.next_candidate_xyz_idx-1] & ~scanned_target_voxels_local
-            if not cp.any(unscanned_voxels_local):
-                rospy.loginfo("Unscanned area has been fully scanned.")
-                self.state = self.STATE_FOLLOW_PATH
-                self.current_waypoint_idx += 1
-                self.coverage_start_time = None
-                return
-            else:
-                if self.is_robot_stuck():
-                    rospy.logwarn("Robot stuck at coverage target. Switching to recovery.")
-                    self.state = self.STATE_RECOVERY
-                    self.recovery_start_time = time.time()
-                    self.coverage_start_time = None
-                    return
-                rospy.logwarn("Robot is at the target pose and orientation but area is still unscanned. Skipping to next candidate.")
-                self.state = self.STATE_FOLLOW_PATH
-                self.current_waypoint_idx += 1
-                self.coverage_start_time = None
-                return
+        # Replan path at every step using the latest tomograph
+        planned_traj = self.planner.plan(robot_pos, unscanned_center)
+        if planned_traj is None or len(planned_traj) < 2:
+            rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
+            self.state = self.STATE_FOLLOW_PATH
+            self.current_waypoint_idx += 1
+            self.coverage_start_time = None
+            return
+
+        # Send the next waypoint as the goal
+        next_goal = planned_traj[1]
+        if len(planned_traj) > 2:
+            next_next_goal = planned_traj[2]
+            orientation = self.calculate_orientation(next_goal, next_next_goal)
+        else:
+            orientation = Quaternion(0, 0, 0, 1)
 
         goal_msg = PoseStamped()
         goal_msg.header.stamp = rospy.Time.now()
         goal_msg.header.frame_id = "map"
-        goal_msg.pose.position.x = self.coverage_target[0]
-        goal_msg.pose.position.y = self.coverage_target[1]
-        goal_msg.pose.position.z = self.coverage_target[2]
-        goal_msg.pose.orientation = self.coverage_orientation
+        goal_msg.pose.position.x = next_goal[0]
+        goal_msg.pose.position.y = next_goal[1]
+        goal_msg.pose.position.z = next_goal[2]
+        goal_msg.pose.orientation = orientation
         self.goal_pub.publish(goal_msg)
+        
     def add_new_obstacles_to_tomograph(self, voxel_list):
         """
         Add newly detected obstacle voxels to the tomograph and update the planner.
@@ -462,9 +449,13 @@ class LidarMappingNode:
         # Track only new voxels for this callback
         new_voxels = []
     
-        tolerance_voxels = 2
-        structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
-        dilated_target_voxels = cupyx.scipy.ndimage.binary_dilation(self.hash_grid, structure=structure)
+        # --- Dilation control for target voxels ---
+        if self.use_dilation:
+            tolerance_voxels = self.dilation_size
+            structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
+            dilated_target_voxels = cupyx.scipy.ndimage.binary_dilation(self.hash_grid, structure=structure)
+        else:
+            dilated_target_voxels = self.hash_grid
     
         if just_added_indices.shape[0] > 0:
             just_added_indices_cp = cp.array(just_added_indices)
@@ -483,9 +474,14 @@ class LidarMappingNode:
         if len(new_voxels) > 0:
             self.add_new_obstacles_to_tomograph(new_voxels)
     
-        tolerance_voxels = 0
-        structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
-        dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
+        # --- Dilation control for scanned voxels ---
+        if self.use_dilation:
+            tolerance_voxels = self.dilation_size
+            structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
+            dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
+        else:
+            dilated_scanned_voxels = self.scanned_voxels
+    
         scanned_target_voxels = dilated_scanned_voxels & self.target_voxels
         remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
     

@@ -71,10 +71,10 @@ def pct_plan():
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
 # ################################################################
-    start_time = time.time()
-    computeNBVpoints()
-    end_time = time.time()
-    print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
+    # start_time = time.time()
+    # computeNBVpoints()
+    # end_time = time.time()
+    # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)

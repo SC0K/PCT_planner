@@ -147,7 +147,17 @@ class TomogramCoveragePlanner(object):
             trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
-        
+    def re_init_planner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
+        """ without initializing the trajectory optimizer."""
+        self.planner.reinit_map(
+            20, 15, self.resolution, self.n_slice, 0.2,
+            trav.reshape(-1, trav.shape[-1]).astype(np.double),
+            elev_g.reshape(-1, elev_g.shape[-1]).astype(np.double),
+            elev_c.reshape(-1, elev_c.shape[-1]).astype(np.double),
+            self.gateway.reshape(-1, self.gateway.shape[-1]),
+            trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
+            -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
+        )
     def compute_adjacency_matrix(self, sampled_points_idx):
         """
         Compute an adjacency matrix where each entry represents the path length between two sampled points.
@@ -171,7 +181,7 @@ class TomogramCoveragePlanner(object):
                 # Swap x and y for planning
                 start_idx = np.array([sampled_points_idx[i][0], sampled_points_idx[i][2], sampled_points_idx[i][1]], dtype=np.int32)
                 end_idx = np.array([sampled_points_idx[j][0], sampled_points_idx[j][2], sampled_points_idx[j][1]], dtype=np.int32)
-                self.planner.plan(start_idx, end_idx, True)
+                self.planner.plan(start_idx, end_idx, False)
                 path_finder: a_star.Astar = self.planner.get_path_finder()
                 path = path_finder.get_result_matrix()
     
@@ -408,8 +418,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(2, int(1 / self.resolution))  # Step size in the x dimension
-        step_y = max(2, int(1 / self.resolution))  # Step size in the y dimension
+        step_x = max(2, int(1.05 / self.resolution))  # Step size in the x dimension
+        step_y = max(2, int(1.05 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)

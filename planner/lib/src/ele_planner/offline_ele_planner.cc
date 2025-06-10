@@ -15,6 +15,17 @@ void OfflineElePlanner::InitMap(
   trajectory_optimizer_wnoj_ =
       GPMPOptimizer(safe_cost_margin, max_heading_rate_, map_);
 }
+void OfflineElePlanner::ReInitMap(
+    const double a_start_cost_threshold, const double safe_cost_margin,
+    const double resolution, const int num_layers, const double step_cost_weight,
+    const Eigen::MatrixXd& cost_map, const Eigen::MatrixXd& height_map,
+    const Eigen::MatrixXd& ceiling, const Eigen::MatrixXd& ele_map,
+    const Eigen::MatrixXd& grad_x, const Eigen::MatrixXd& grad_y) {
+  path_finder_.Init(a_start_cost_threshold, num_layers, resolution,
+                      step_cost_weight, cost_map, height_map, ele_map);
+  map_->Init(resolution, num_layers, cost_map, ele_map, height_map, ceiling,
+               grad_x, grad_y);
+}
 void OfflineElePlanner::InitPlanner(
     const double a_start_cost_threshold, const double safe_cost_margin,
     const double resolution, const int num_layers, const double step_cost_weight,

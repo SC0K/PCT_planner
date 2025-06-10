@@ -223,6 +223,20 @@ class TomogramCoveragePlanner(object):
             trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
+    def re_init_planner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
+        self.planner.reinit_map(
+            20,
+            15,
+            self.resolution,
+            self.n_slice,
+            0.2,
+            trav.reshape(-1, trav.shape[-1]).astype(np.double),
+            elev_g.reshape(-1, elev_g.shape[-1]).astype(np.double),
+            elev_c.reshape(-1, elev_c.shape[-1]).astype(np.double),
+            self.gateway.reshape(-1, self.gateway.shape[-1]),
+            trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
+            -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
+        )
     
     def add_obstacle_points(self, world_points, cluster_eps=0.5, min_samples=3, z_buffer=0.3, xy_buffer=0.25):
         """
@@ -271,7 +285,7 @@ class TomogramCoveragePlanner(object):
                         y_min = max(0, y - xy_radius)
                         y_max = min(self.elev_g.shape[1], y + xy_radius + 1)
                         self.trav[ds, y_min:y_max, x_min:x_max] = self.cost_barrier  # Mark as untraversabl
-        self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
+        self.re_init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
 
         
     def compute_adjacency_matrix(self, sampled_points_idx):
@@ -297,7 +311,7 @@ class TomogramCoveragePlanner(object):
                 # Swap x and y for planning
                 start_idx = np.array([sampled_points_idx[i][0], sampled_points_idx[i][2], sampled_points_idx[i][1]], dtype=np.int32)
                 end_idx = np.array([sampled_points_idx[j][0], sampled_points_idx[j][2], sampled_points_idx[j][1]], dtype=np.int32)
-                self.planner.plan(start_idx, end_idx, True)
+                self.planner.plan(start_idx, end_idx, False)
                 path_finder: a_star.Astar = self.planner.get_path_finder()
                 path = path_finder.get_result_matrix()
     

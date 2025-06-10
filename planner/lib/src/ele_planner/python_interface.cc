@@ -11,6 +11,12 @@ PYBIND11_MODULE(ele_planner, m) {
       .def(py::init<double, bool>(), py::arg("max_heading_rate"),
            py::arg("use_quintic") = false)
       .def("init_map", &OfflineElePlanner::InitMap)
+      .def("reinit_map", &OfflineElePlanner::ReInitMap,
+           py::arg("a_start_cost_threshold"), py::arg("safe_cost_margin"),
+           py::arg("resolution"), py::arg("num_layers"),
+           py::arg("step_cost_weight"), py::arg("cost_map"),
+           py::arg("height_map"), py::arg("ceiling"), py::arg("ele_map"),
+           py::arg("grad_x"), py::arg("grad_y"))
       .def("init_planner", &OfflineElePlanner::InitPlanner)
       .def("plan", &OfflineElePlanner::Plan)
       .def("debug", &OfflineElePlanner::Debug)
