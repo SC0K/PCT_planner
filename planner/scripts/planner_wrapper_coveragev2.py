@@ -631,8 +631,8 @@ class TomogramCoveragePlanner(object):
                 v_cp = v_cp[valid]
                 new_voxel_array[v_cp[:, 0], v_cp[:, 1], v_cp[:, 2]] = True
 
-            # Conservative dilation to fill FOV gaps
-            struct = cp.ones((3, 3, 1), dtype=cp.bool_)  # Full 3×3×3 cube
+            # Dilation to fill FOV gaps
+            struct = cp.ones((3, 3, 1), dtype=cp.bool_)  # x×y×z 
             dilated = cp_ndimage.binary_dilation(new_voxel_array, structure=struct)
             dilated = cp_ndimage.binary_dilation(dilated, structure=struct)
 

@@ -126,15 +126,23 @@ def pct_plan():
     global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
     print("Global path:", global_path)
     candidate_points_xyz = np.array([candidate_points_xyz[tsp_path[0]],candidate_points_xyz[tsp_path[-2]]], dtype=np.float32)
-    full_trajectory = generate_global_trajectory(global_path, planner)
-    # np.save("full_trajectory.npy", full_trajectory)
+    full_trajectory,segment_trajectory = generate_global_trajectory(global_path, planner)
+    # Rearrange the candidate points to start from the first point in the global path
+    candidate_points_xyz_path = candidate_points_xyz[tsp_path]
+    np.save("candidate_points_xyz_path.npy", candidate_points_xyz_path)
+    np.save("segment_trajectory.npy", segment_trajectory, allow_pickle=True)
     if len(full_trajectory) > 0:
         path_pub.publish(traj2ros(full_trajectory))
+        np.save("full_trajectory.npy", full_trajectory)
         print("Full 3D trajectory published")
     else:
         rospy.logwarn("Failed to generate a full 3D trajectory")
+    # full_trajectory = np.load("full_trajectory.npy")
+    path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
+    explored_area, explored_cells = compute_explored_region(candidate_points_idx, candidate_angles)
+    print(f"Explored Area: {explored_area:.2f} m^2")
 
 def compute_explored_region(points_idx):
     """
@@ -181,7 +189,7 @@ def compute_explored_region(points_idx):
 def generate_global_trajectory(global_path, planner):
     """
     Generate a 3D trajectory for the global path by concatenating the trajectories
-    between consecutive points. Set the diagonal entries to 0.
+    between consecutive points. Also store each segment's trajectory.
 
     Args:
         global_path (np.ndarray): The global path as a sequence of 3D points.
@@ -189,8 +197,10 @@ def generate_global_trajectory(global_path, planner):
 
     Returns:
         np.ndarray: The concatenated 3D trajectory for the global path.
+        dict: Dictionary mapping (start_idx, end_idx) to each segment's trajectory.
     """
     full_trajectory = []
+    segment_trajectories = {}
 
     for i in range(len(global_path) - 1):
         start_pos = global_path[i]
@@ -198,12 +208,14 @@ def generate_global_trajectory(global_path, planner):
 
         # Compute the 3D trajectory between the two points
         traj_3d = planner.plan_with_idx(start_pos, end_pos)
+        print(f"Segment {i} to {i+1}: Start {start_pos}, End {end_pos}, Trajectory length: {len(traj_3d) if traj_3d is not None else 'None'}")
         if traj_3d is not None:
-            full_trajectory.extend(traj_3d)  # Append the trajectory to the full trajectory
+            full_trajectory.extend(traj_3d) 
+            # Store the segment trajectory
+            segment_trajectories[(i, i+1)] = np.array(traj_3d)
         else:
             rospy.logwarn(f"Failed to compute trajectory between {start_pos} and {end_pos}")
-
-    return np.array(full_trajectory)
+    return np.array(full_trajectory), segment_trajectories
 
 
 def find_non_diagonal_inf(adjacency_matrix):
