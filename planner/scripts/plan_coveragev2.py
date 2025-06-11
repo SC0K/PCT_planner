@@ -81,6 +81,7 @@ def pct_plan():
     candidate_angles = np.load("sampled_points_angles.npy")
     print("Candidate points:", candidate_angles.shape)
     # publish_points(candidate_points_xyz)
+    explored_cells = planner.compute_and_visualise_explored_voxels(candidate_points_xyz, candidate_angles)
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
@@ -142,6 +143,8 @@ def pct_plan():
     path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
+    area = compute_covered_area(explored_cells, planner.resolution)
+    print(f"Covered Area: {area:.2f} m^2")
 
 def compute_explored_region(points_idx):
     """
@@ -179,7 +182,20 @@ def compute_explored_region(points_idx):
     explore_area = np.nansum(Explored_cells) * planner.resolution ** 2
     return explore_area, Explored_cells
 
+def compute_covered_area(explored_cells, resolution):
+    """
+    Compute the covered area (in m^2) based on the explored cells array.
 
+    Args:
+        explored_cells (np.ndarray): 3D boolean or integer array where nonzero/True means explored.
+        resolution (float): The size of each cell in meters.
+
+    Returns:
+        float: The total covered area in square meters.
+    """
+    num_covered = np.count_nonzero(explored_cells)
+    area = num_covered * (resolution ** 2)
+    return area
 
 
     
