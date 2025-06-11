@@ -75,6 +75,7 @@ class LidarMappingNode:
         self.goal_pub = rospy.Publisher("/goal", PoseStamped, queue_size=10)
         self.added_voxels_pc_pub = rospy.Publisher("added_voxels_pc", PointCloud2, queue_size=10)
         self.tomogram_pub = rospy.Publisher("tomograph", PointCloud2, latch=True, queue_size=1)
+        self.remaining_target_voxels_pc_pub = rospy.Publisher("remaining_target_voxels_pc", PointCloud2, queue_size=10)
 
         rospy.Subscriber("/anymal/pose_in_sim_world", Odometry, self.robot_pose_callback)
         rospy.Subscriber("/current_lidar_voxel_grid", PointCloud2, self.lidar_grid_callback)
@@ -87,6 +88,7 @@ class LidarMappingNode:
         self.stuck_counter = 0
         self.stuck_threshold = 10
         self.use_dilation = False
+        self.use_dilation_new_obstacles = True
         self.dilation_size = 1   
 
         # State machine
@@ -249,9 +251,7 @@ class LidarMappingNode:
                             return
                         
     def handle_coverage(self):
-        if hasattr(self, 'added_voxels') and len(self.added_voxels) > 0:
-            self.add_new_obstacles_to_tomograph()
-
+    
         # Always recompute the unscanned region and plan to its center
         scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.next_candidate_xyz_idx-1]
         unscanned_voxels_local = self.target_voxels_candidates[self.next_candidate_xyz_idx-1] & ~scanned_target_voxels_local
@@ -261,7 +261,7 @@ class LidarMappingNode:
             self.current_waypoint_idx += 1
             self.coverage_start_time = None
             return
-
+    
         unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
         if unscanned_indices.shape[0] == 0:
             rospy.loginfo("No unscanned voxels found in candidate region.")
@@ -269,21 +269,23 @@ class LidarMappingNode:
             self.current_waypoint_idx += 1
             self.coverage_start_time = None
             return
-
-        # Compute the center of the largest unscanned patch
+    
+        # Compute the center of the largest unscanned patch (x, y), but set z to the lowest point in the patch
         unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-        robot_pos = np.array(self.robot_position)
-        unscanned_center[2] = robot_pos[2]  # Keep robot at current height
-
+        min_z_idx = np.min(unscanned_indices[:, 2])
+        unscanned_center[2] = (min_z_idx + self.planner.min_idx[2] + 0.5) * self.planner.voxel_size  # project to ground
+    
         # Replan path at every step using the latest tomograph
-        planned_traj = self.planner.plan(robot_pos, unscanned_center)
+        robot_pos = np.array(self.robot_position)
+        # planned_traj = self.planner.plan(robot_pos, unscanned_center)
+        planned_traj = None
         if planned_traj is None or len(planned_traj) < 2:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
             self.state = self.STATE_FOLLOW_PATH
             self.current_waypoint_idx += 1
             self.coverage_start_time = None
             return
-
+    
         # Send the next waypoint as the goal
         next_goal = planned_traj[1]
         if len(planned_traj) > 2:
@@ -291,7 +293,7 @@ class LidarMappingNode:
             orientation = self.calculate_orientation(next_goal, next_next_goal)
         else:
             orientation = Quaternion(0, 0, 0, 1)
-
+    
         goal_msg = PoseStamped()
         goal_msg.header.stamp = rospy.Time.now()
         goal_msg.header.frame_id = "map"
@@ -422,6 +424,21 @@ class LidarMappingNode:
         header.frame_id = "map"
         pc2_msg = pc2.create_cloud_xyz32(header, points)
         self.scanned_voxels_pc_pub.publish(pc2_msg)
+
+    def publish_remaining_target_voxels(self):
+        """Publish the remaining target voxels that have not been scanned yet."""
+        remaining_target_voxels = self.target_voxels & ~self.scanned_voxels
+        indices = cp.argwhere(remaining_target_voxels).get()
+        if indices.shape[0] == 0:
+            return
+        coords = (indices + self.planner.min_idx + 0.5) * self.planner.voxel_size
+        points = coords.astype(np.float32)
+        header = std_msgs.msg.Header()
+        header.stamp = rospy.Time.now()
+        header.frame_id = "map"
+        pc2_msg = pc2.create_cloud_xyz32(header, points)
+        self.remaining_target_voxels_pc_pub.publish(pc2_msg)
+        
     
     def lidar_grid_callback(self, msg):
         points = np.array([[p[0], p[1], p[2]] for p in pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)])
@@ -450,7 +467,7 @@ class LidarMappingNode:
         new_voxels = []
     
         # --- Dilation control for target voxels ---
-        if self.use_dilation:
+        if self.use_dilation_new_obstacles:
             tolerance_voxels = self.dilation_size
             structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
             dilated_target_voxels = cupyx.scipy.ndimage.binary_dilation(self.hash_grid, structure=structure)
@@ -490,6 +507,7 @@ class LidarMappingNode:
     
         self.publish_scanned_voxels()
         self.publish_added_voxels()
+        self.publish_remaining_target_voxels()
 
     def follow_path(self):
         self.start_time = time.time()
@@ -503,7 +521,7 @@ if __name__ == "__main__":
     cfg = Config()
     planner = TomogramCoveragePlanner(cfg)
     planner.loadTomogram("experiments/2F_2*1")
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1)
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.2)
     node = LidarMappingNode(planner)
     node.follow_path()
     rospy.spin()

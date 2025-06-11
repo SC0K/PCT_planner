@@ -72,22 +72,22 @@ def pct_plan():
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
 # ################################################################
-    start_time = time.time()
-    computeNBVpoints()
-    end_time = time.time()
-    print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
+    # start_time = time.time()
+    # computeNBVpoints()
+    # end_time = time.time()
+    # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
     candidate_angles = np.load("sampled_points_angles.npy")
     print("Candidate points:", candidate_points_idx.shape)
-    publish_points(candidate_points_xyz)
+    # publish_points(candidate_points_xyz)
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
     # adjacency = compute_weighted_euclidean_adjacency(candidate_points_xyz, z_weight=3.0)
-    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    np.save("adjacency_matrix.npy", adjacency)
+    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    # np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
@@ -114,7 +114,7 @@ def pct_plan():
     np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
     np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
     np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
-    # publish_points(updated_sampled_points_xyz)
+    publish_points(updated_sampled_points_xyz)
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
     # np.set_printoptions(threshold=np.inf)
     # print("Adjacency matrix:", updated_adjacency_matrix)  
@@ -135,11 +135,11 @@ def pct_plan():
     np.save("segment_trajectory.npy", segment_trajectory, allow_pickle=True)
     if len(full_trajectory) > 0:
         path_pub.publish(traj2ros(full_trajectory))
-        # np.save("full_trajectory.npy", full_trajectory)
+        np.save("full_trajectory.npy", full_trajectory)
         print("Full 3D trajectory published")
     else:
         rospy.logwarn("Failed to generate a full 3D trajectory")
-    # full_trajectory = np.load("full_trajectory.npy")
+    full_trajectory = np.load("full_trajectory.npy")
     path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")

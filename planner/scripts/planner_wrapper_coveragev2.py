@@ -224,6 +224,7 @@ class TomogramCoveragePlanner(object):
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
     def re_init_planner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
+        """ Initialise the planner without initialising the optimiser."""
         self.planner.reinit_map(
             20,
             15,
@@ -285,7 +286,7 @@ class TomogramCoveragePlanner(object):
                         y_min = max(0, y - xy_radius)
                         y_max = min(self.elev_g.shape[1], y + xy_radius + 1)
                         self.trav[ds, y_min:y_max, x_min:x_max] = self.cost_barrier  # Mark as untraversabl
-        self.re_init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
+        self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
 
         
     def compute_adjacency_matrix(self, sampled_points_idx):
@@ -421,7 +422,7 @@ class TomogramCoveragePlanner(object):
         z_height = pos[2]  # Extract the z-coordinate
         z_idx = -1  # Default to -1 if no valid layer is found
         for s in range(self.elev_g.shape[0]):
-            print(f"Layer height {s}: {self.elev_g[s, idx_xy[1], idx_xy[0]]}")
+            # print(f"Layer height {s}: {self.elev_g[s, idx_xy[1], idx_xy[0]]}")
             if abs(z_height - self.elev_g[s, idx_xy[1], idx_xy[0]]) <= self.resolution*2:
                 z_idx = s
                 break
@@ -584,6 +585,7 @@ class TomogramCoveragePlanner(object):
         sampled_points_xyz = sampled_points_xyz + np.array([0, 0, 0.6])  # camera height offset
 
         yaw_angles = [0, 90, 180, 270]
+        # yaw_angles = [0,45, 90, 135, 180,225, 270]
         grid_shape = cp.asarray(self.hash_grid.shape)
         min_idx_cp = cp.asarray(self.min_idx)
 
@@ -630,12 +632,14 @@ class TomogramCoveragePlanner(object):
                 new_voxel_array[v_cp[:, 0], v_cp[:, 1], v_cp[:, 2]] = True
 
             # Conservative dilation to fill FOV gaps
-            struct = cp.ones((3, 3, 3), dtype=cp.bool_)  # Full 3×3×3 cube
+            struct = cp.ones((3, 3, 1), dtype=cp.bool_)  # Full 3×3×3 cube
             dilated = cp_ndimage.binary_dilation(new_voxel_array, structure=struct)
             dilated = cp_ndimage.binary_dilation(dilated, structure=struct)
 
             dilated = cp.logical_and(dilated, self.hash_grid)
             self.explored_voxels = cp.logical_or(self.explored_voxels, dilated)
+
+            # self.explored_voxels = cp.logical_or(self.explored_voxels, new_voxel_array)
 
             # Remove used candidate poses
             keep_mask = np.ones(len(sampled_points_xyz), dtype=bool)
@@ -714,7 +718,7 @@ class TomogramCoveragePlanner(object):
             # Perform raycasting
             visible = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
-                self.hash_grid, self.fov_vert, self.fov_hor, self.sensor_range_analysis,
+                self.hash_grid, self.fov_vert, self.fov_hor+10, self.sensor_range_analysis,
                 self.resolution_raycast, n_rays=50
             )
 
@@ -770,7 +774,7 @@ class TomogramCoveragePlanner(object):
 
         n = len(candidate_poses)
         az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
-        el = cp.linspace(-45, 5, n_rays)
+        el = cp.linspace(-45, 4.5, n_rays)
         az_grid, el_grid = cp.meshgrid(az, el)
         az_flat = cp.radians(az_grid.flatten())
         el_flat = cp.radians(el_grid.flatten())
@@ -791,7 +795,7 @@ class TomogramCoveragePlanner(object):
             dirs_all.append(dirs_base @ cp.asarray(rot.T))
         dirs_all = cp.stack(dirs_all)
 
-        dists = cp.arange(0, max_range, resolution)
+        dists = cp.arange(0, max_range-3*resolution, resolution)
         cam_shifted = cp.asarray(candidate_poses) - cp.asarray(self.min_idx) * self.voxel_size
         rays = dirs_all[:, :, cp.newaxis, :] * dists[None, :, None] + cam_shifted[:, None, None, :]
 
@@ -846,7 +850,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
                                  fov_deg_ver=90, fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
     # Compute azimuth and elevation angles
     az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
-    el = cp.linspace(-45, 5, n_rays)
+    el = cp.linspace(-45, 4.5, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())
@@ -860,7 +864,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
     dirs = dirs @ cp.asarray(orientation.T)
 
     # Sample distances and create rays
-    dists = cp.arange(0, max_range, resolution)
+    dists = cp.arange(0, max_range - 3*resolution, resolution)
     shifted_pose = cp.asarray(candidate_pose) - cp.asarray(min_idx) * voxel_size
     rays = dirs[:, cp.newaxis, :] * dists[cp.newaxis, :, None] + shifted_pose
 
