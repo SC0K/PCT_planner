@@ -80,7 +80,7 @@ class TomogramCoveragePlanner(object):
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
-        self.sensor_range_analysis = 4
+        self.sensor_range_analysis = 4.5
         self.sensor_fov = self.cfg.sensor.sensor_fov
         self.layer_modes = None
         self.fov_vert = 90
@@ -693,20 +693,21 @@ class TomogramCoveragePlanner(object):
         
         return explored_voxels_max, explored_voxels_candidate
 
-    def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles):
+    def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles, use_dilation=False):
         """
         Compute the explored voxels from candidate viewpoints using raycasting and visualize them.
-
+    
         Args:
             candidate_points_xyz (np.ndarray): Candidate camera poses in world coordinates.
             angles (np.ndarray): Yaw angles (degrees) corresponding to each candidate pose.
+            use_dilation (bool): Whether to apply dilation to fill FOV gaps.
         """
         import cupyx.scipy.ndimage as cp_ndimage
-
+    
         # Initialize voxel grid to track which voxels have been explored
         candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.6])
         explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
-
+    
         # Iterate through each candidate pose and perform raycasting
         for i, candidate_pose in enumerate(candidate_points_xyz):
             orientation = np.array([
@@ -714,45 +715,48 @@ class TomogramCoveragePlanner(object):
                 [np.sin(np.radians(angles[i])),  np.cos(np.radians(angles[i])), 0],
                 [0, 0, 1]
             ])
-
+    
             # Perform raycasting
             visible = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
                 self.hash_grid, self.fov_vert, self.fov_hor+10, self.sensor_range_analysis,
                 self.resolution_raycast, n_rays=50
             )
-
+    
             # Mark visible voxels as explored
             for v in visible:
                 local_idx = tuple(np.array(v) - self.min_idx)
                 explored_voxels[local_idx] = True
-
-        # Apply masked dilation
-        dilated = cp_ndimage.binary_dilation(explored_voxels, iterations=1)
-        explored_voxels = cp.logical_and(dilated, self.hash_grid)
-
+    
+        # --- Optionally use the same dilation as in nextBestView ---
+        if use_dilation:
+            struct = cp.ones((2, 2, 1), dtype=cp.bool_)  # x×y×z (z, y, x)
+            dilated = cp_ndimage.binary_dilation(explored_voxels, structure=struct)
+            dilated = cp_ndimage.binary_dilation(dilated, structure=struct)
+            explored_voxels = cp.logical_and(dilated, self.hash_grid)
+    
         # Convert voxel indices and exploration state to NumPy
         explored_np = cp.asnumpy(explored_voxels)
         hash_np = cp.asnumpy(self.hash_grid)
-
+    
         # Get indices of occupied voxels
         voxel_indices = np.argwhere(hash_np)
-
+    
         # Compute voxel centers in world coordinates
         voxel_centers = (voxel_indices + self.min_idx) * self.voxel_size
-
+    
         # Build Open3D point cloud
         vis_pcd = o3d.geometry.PointCloud()
         vis_pcd.points = o3d.utility.Vector3dVector(voxel_centers)
-
+    
         # Assign colors: red for explored, gray for unexplored
         explored_mask = explored_np[voxel_indices[:, 0], voxel_indices[:, 1], voxel_indices[:, 2]]
         colors = np.where(explored_mask[:, None], [1.0, 0.0, 0.0], [0.5, 0.5, 0.5])
         vis_pcd.colors = o3d.utility.Vector3dVector(colors)
-
+    
         # Visualize
         o3d.visualization.draw_geometries([vis_pcd], window_name="Explored Voxel Map")
-
+    
         return explored_voxels
 
     def batched_ray_reward(self, candidate_poses, orientations_deg):

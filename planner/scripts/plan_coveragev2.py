@@ -45,7 +45,8 @@ sampled_points_pub = rospy.Publisher("/sampled_points", PointCloud2, latch=True,
 
 def pct_plan():
     planner.loadTomogram(tomo_file)
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.2)
+    voxel_map_resolution = 0.2
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", voxel_map_resolution)
 
     # traj_3d = planner.plan(start_pos, end_pos)
     # if traj_3d is not None:
@@ -81,7 +82,6 @@ def pct_plan():
     candidate_angles = np.load("sampled_points_angles.npy")
     print("Candidate points:", candidate_angles.shape)
     # publish_points(candidate_points_xyz)
-    explored_cells = planner.compute_and_visualise_explored_voxels(candidate_points_xyz, candidate_angles)
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
@@ -143,7 +143,8 @@ def pct_plan():
     path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
-    area = compute_covered_area(explored_cells, planner.resolution)
+    explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
+    area = compute_covered_area(explored_cells, planner.resolution_raycast)
     print(f"Covered Area: {area:.2f} m^2")
 
 def compute_explored_region(points_idx):
