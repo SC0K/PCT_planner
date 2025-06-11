@@ -9,9 +9,9 @@ class ConfigWrapper():
     tomo_dir = '/rsc/tomogram/'
 class ConfigSensor():
     sensor_range = 4
-    sensor_fov = 90    # degrees
+    sensor_fov = 80    # degrees
     sensor_fov_ver = 90
-    sensor_fov_hor = 90    # degrees
+    sensor_fov_hor = 80    # degrees
 
 
 class Config():

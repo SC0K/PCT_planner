@@ -233,9 +233,6 @@ hash_grid = cp.zeros(tuple(grid_shape), dtype=cp.bool_)
 for idx in shifted_indices:
     hash_grid[tuple(idx)] = True
 
-# Initialize explored voxel map
-explored_voxels = cp.zeros_like(hash_grid)
-
 # === RawKernel code ===
 ray_hit_kernel_code = r'''
 extern "C" __global__
@@ -273,7 +270,33 @@ void ray_first_hit(const int* idxs, const bool* valid, const bool* hash,
 '''
 ray_first_hit_kernel = cp.RawKernel(ray_hit_kernel_code, "ray_first_hit")
 
-# === Raycasting Function with reward tracking ===
+def visualize_rays_for_multiple_poses(camera_poses, orientations, rays_all, hits_all):
+    """
+    Visualize rays for multiple camera poses in one Open3D window.
+    Args:
+        camera_poses: (N, 3) array of camera positions
+        orientations: list of (3, 3) rotation matrices
+        rays_all: (N, n_rays*n_rays, n_steps, 3) array of ray points for each pose (in shifted grid coords)
+        hits_all: (N, n_rays*n_rays) array, 1 if hit, 0 otherwise
+    """
+    ray_lines = []
+    n_poses = len(camera_poses)
+    n_rays = rays_all.shape[1]
+    shift = min_idx * voxel_size  # shift back to world coordinates
+    for i in range(n_poses):
+        for j in range(n_rays):
+            ray_pts = rays_all[i, j] + shift  # <-- shift rays back to world coords
+            if hits_all[i, j] == 1:
+                valid_mask = ~np.all(ray_pts == 0, axis=1)
+                ray_pts = ray_pts[valid_mask]
+            ray_line = o3d.geometry.LineSet()
+            ray_line.points = o3d.utility.Vector3dVector(ray_pts)
+            ray_line.lines = o3d.utility.Vector2iVector([[k, k + 1] for k in range(len(ray_pts) - 1)])
+            color = [0, 1, 0] if i == 0 else [0, 0, 1] if i == 1 else [1, 0, 1]
+            ray_line.colors = o3d.utility.Vector3dVector([color] * (len(ray_pts) - 1))
+            ray_lines.append(ray_line)
+    return ray_lines
+
 def raycast_multiple_poses_with_rewards(camera_poses, orientations):
     n_poses = len(camera_poses)
     az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
@@ -340,36 +363,26 @@ def raycast_multiple_poses_with_rewards(camera_poses, orientations):
         per_view_visible_voxels.append(voxel_set_i)
         rewards.append(len(voxel_set_i))
 
-        # Mark explored (on GPU)
-        for v in voxel_set_i:
-            local_idx = tuple(np.array(v) - min_idx)
-            explored_voxels[local_idx] = True
+    # For visualization
+    rays_all = rays.get()
+    hits_all = hit_flags_np
 
-    # === Perform dilation on explored region ===
-    dilated = cp_ndimage.binary_dilation(explored_voxels, iterations=1, structure=cp.ones((3, 3, 3), dtype=cp.bool_))
-    dilated = cp.logical_and(dilated, hash_grid)
-    explored_voxels[:] = cp.logical_or(explored_voxels, dilated)
-
-    return per_view_visible_voxels, rewards
+    return per_view_visible_voxels, rewards, rays_all, hits_all
 
 # === Example usage ===
 camera_poses = np.array([
-    [5, 2.0, 0.3],
-    [0, 0.0, 0.3]
+    [5, 2.0, 0.6],
+    [0, 0.0, 0.6]
 ])
-orientations = [np.array([
-    [np.cos(yaw), -np.sin(yaw), 0],
-    [np.sin(yaw),  np.cos(yaw), 0],
-    [0, 0, 1]
-]) for yaw in [0, np.pi / 4, np.pi / 2]]
+orientations = [np.eye(3) for _ in range(len(camera_poses))]
 
-voxels_per_pose, rewards = raycast_multiple_poses_with_rewards(camera_poses, orientations)
+voxels_per_pose, rewards, rays_all, hits_all = raycast_multiple_poses_with_rewards(camera_poses, orientations)
 
 # === Print reward per viewpoint ===
 for i, r in enumerate(rewards):
     print(f"Pose {i}: {r} visible voxels")
 
-# === Optional visualization ===
+# === Visualization of all rays for all poses in one window ===
 all_visible_voxels = set().union(*voxels_per_pose)
 vis_pcd = o3d.geometry.PointCloud()
 vis_pcd.points = o3d.utility.Vector3dVector(voxel_centers)
@@ -380,5 +393,6 @@ for v in voxel_indices:
     else:
         colors.append([0.5, 0.5, 0.5])  # gray
 vis_pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
-o3d.visualization.draw_geometries([vis_pcd])
 
+ray_lines = visualize_rays_for_multiple_poses(camera_poses, orientations, rays_all, hits_all)
+o3d.visualization.draw_geometries([vis_pcd] + ray_lines)

@@ -58,7 +58,8 @@ class TomogramCoveragePlanner(object):
     def __init__(self, cfg):
         self.cfg = cfg
 
-        self.use_quintic = self.cfg.planner.use_quintic
+        # self.use_quintic = self.cfg.planner.use_quintic
+        self.use_quintic = False
         self.max_heading_rate = self.cfg.planner.max_heading_rate
 
         self.tomo_dir = rsg_root + self.cfg.wrapper.tomo_dir
@@ -239,7 +240,7 @@ class TomogramCoveragePlanner(object):
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
     
-    def add_obstacle_points(self, world_points, cluster_eps=0.5, min_samples=3, z_buffer=0.3, xy_buffer=0.25):
+    def add_obstacle_points(self, world_points, cluster_eps=0.5, min_samples=3, z_buffer=0.5, xy_buffer=0.25):
         """
         Add new obstacle points to the tomograph by clustering and marking the lowest points in each cluster as untraversable.
 
@@ -365,9 +366,10 @@ class TomogramCoveragePlanner(object):
         # TODO: calculate slice index. By default the start and end pos are all at slice 0
         # self.start_idx[1:] = self.pos2idx(start_pos)
         # self.end_idx[1:] = self.pos2idx(end_pos)
-        self.start_idx[:] = self.pos2idx_3D(start_pos)
-        self.end_idx[:] = self.pos2idx_3D(end_pos)
-        
+        self.start_idx[:] = self.pos2idx_3D_plan(start_pos)
+        self.end_idx[:] = self.pos2idx_3D_plan(end_pos)
+        print("start_idx:", self.start_idx)
+        print("end_idx:", self.end_idx)
 
         self.planner.plan(self.start_idx, self.end_idx, True)
         path_finder: a_star.Astar = self.planner.get_path_finder()
@@ -400,6 +402,36 @@ class TomogramCoveragePlanner(object):
         idx = np.round(pos / self.resolution).astype(np.int32) + self.offset
         idx = np.array([idx[1], idx[0]], dtype=np.float32) # Swap x and y for grid indexing
         return idx
+    def pos2idx_3D_plan(self, pos):
+        """
+        Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
+    
+        Args:
+            pos (np.ndarray): The 3D position (x, y, z).
+    
+        Returns:
+            np.ndarray: The grid indices (s, y, x).
+        """
+        # Subtract the center to align with the grid
+        pos_xy = np.array([pos[0], pos[1]])
+        pos_xy = pos_xy - self.center
+    
+        # Calculate x and y indices
+        idx_xy = np.round(pos_xy / self.resolution).astype(np.int32) + self.offset
+        idx_xy = np.array([idx_xy[1], idx_xy[0]], dtype=np.int32)  # Swap x and y for grid indexing
+    
+        # Search for the z index (layer number) as the maximum s where elev_g[s, idx_xy[1], idx_xy[0]] <= z_height
+        z_height = pos[2]  # Extract the z-coordinate
+        z_idx = 0  # Default to 0 if no valid layer is found
+        for s in range(self.elev_g.shape[0] - 1, -1, -1):  # Search from top down
+            elev = self.elev_g[s, idx_xy[1], idx_xy[0]]
+            if elev <= z_height:
+                z_idx = s
+                break
+    
+        # Combine z_idx with x and y indices
+        idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.float32)
+        return idx
     def pos2idx_3D(self, pos):
         """
         Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
@@ -430,6 +462,7 @@ class TomogramCoveragePlanner(object):
         # Combine z_idx with x and y indices
         idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.float32)
         return idx
+        
     def sampleUniformPointsInSpace(self):
         """
         Sample points that are uniformly distributed in space with a fixed distance equal to the sensor range
@@ -677,11 +710,11 @@ class TomogramCoveragePlanner(object):
                 [0, 0, 1]
             ])
             visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range_analysis,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range,
                 self.resolution_raycast, n_rays=50)
             # Maximum possible visibility
             visible_max = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, self.fov_hor , self.sensor_range_analysis,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, self.fov_hor, self.sensor_range_analysis,
                 self.resolution_raycast, n_rays=50)
             for v in visible_max:
                 local_idx = tuple(v - self.min_idx)
@@ -778,7 +811,7 @@ class TomogramCoveragePlanner(object):
 
         n = len(candidate_poses)
         az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
-        el = cp.linspace(-45, 4.5, n_rays)
+        el = cp.linspace(-45, 4, n_rays)
         az_grid, el_grid = cp.meshgrid(az, el)
         az_flat = cp.radians(az_grid.flatten())
         el_flat = cp.radians(el_grid.flatten())
@@ -854,7 +887,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
                                  fov_deg_ver=90, fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
     # Compute azimuth and elevation angles
     az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
-    el = cp.linspace(-45, 4.5, n_rays)
+    el = cp.linspace(-45, 4, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())

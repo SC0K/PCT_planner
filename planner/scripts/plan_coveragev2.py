@@ -72,10 +72,10 @@ def pct_plan():
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
 # ################################################################
-    # start_time = time.time()
-    # computeNBVpoints()
-    # end_time = time.time()
-    # print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
+    start_time = time.time()
+    computeNBVpoints()
+    end_time = time.time()
+    print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
@@ -85,9 +85,9 @@ def pct_plan():
 
 #################### Compute adjacency matrix computation ##############################
     # Computation time ~ 60s for 60 points
-    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    # np.save("adjacency_matrix.npy", adjacency)
-    # print("Adjacency matrix:", adjacency)
+    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    np.save("adjacency_matrix.npy", adjacency)
+    print("Adjacency matrix:", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
@@ -104,8 +104,8 @@ def pct_plan():
     # publish_points(start_point.reshape(1, 3), frame_id="map")
 
     
-    # np.set_printoptions(threshold=np.inf)
-    # print("Adjacency matrix:", adjacency_matrix)  
+    np.set_printoptions(threshold=np.inf)
+    print("Adjacency matrix:", adjacency_matrix)  
 
     updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
     remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
