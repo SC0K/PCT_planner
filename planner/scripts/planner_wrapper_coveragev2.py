@@ -240,53 +240,36 @@ class TomogramCoveragePlanner(object):
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
     
-    def add_obstacle_points(self, world_points, cluster_eps=0.5, min_samples=3, z_buffer=0.5, xy_buffer=0.2):
+    def add_obstacle_points(self, world_points, z_buffer=0.5, xy_buffer=0.2):
         """
-        Add new obstacle points to the tomograph by clustering and marking the lowest points in each cluster as untraversable.
-
+        Add new obstacle points to the tomograph by marking all provided points as untraversable.
+    
         Args:
             world_points (np.ndarray): Nx3 array of new obstacle points in world coordinates.
-            cluster_eps (float): DBSCAN epsilon for clustering (meters).
-            min_samples (int): Minimum samples for DBSCAN.
             z_buffer (float): Height buffer above the lowest point to mark as obstacle (meters).
             xy_buffer (float): XY buffer around each obstacle (meters).
         """
         if world_points.shape[0] == 0:
             return
-
-        # Cluster the points in XY using DBSCAN
-        clustering = sklearn.cluster.DBSCAN(eps=cluster_eps, min_samples=min_samples)
-        labels = clustering.fit_predict(world_points[:, :2])
-        unique_labels = set(labels)
-        if -1 in unique_labels:
-            unique_labels.remove(-1)  # Remove noise label
-
-        for label in unique_labels:
-            cluster_points = world_points[labels == label]
-            if cluster_points.shape[0] == 0:
-                continue
-
-            # Find the lowest Z in the cluster
-            min_z = np.min(cluster_points[:, 2])
-            lowest_points = cluster_points[np.abs(cluster_points[:, 2] - min_z) < z_buffer]
-
-            for pt in lowest_points:
-                # Convert world point to tomograph grid indices
-                idx = self.pos2idx_3D(pt)
-                idx = np.round(idx).astype(int)
-                s, x, y = idx
-
-                # Mark a region around (x, y) in all layers at or below this z as untraversable
-                xy_radius = int(np.ceil(xy_buffer / self.resolution))
-                for ds in range(self.elev_g.shape[0]):
-                    # Only mark if the elevation is below or close to the obstacle point
-                    elev = self.elev_g[ds, y, x]
-                    if abs(elev-pt[2]) <= z_buffer:
-                        x_min = max(0, x - xy_radius)
-                        x_max = min(self.elev_g.shape[2], x + xy_radius + 1)
-                        y_min = max(0, y - xy_radius)
-                        y_max = min(self.elev_g.shape[1], y + xy_radius + 1)
-                        self.trav[ds, y_min:y_max, x_min:x_max] = self.cost_barrier  # Mark as untraversabl
+    
+        for pt in world_points:
+            # Convert world point to tomograph grid indices
+            idx = self.pos2idx_3D(pt)
+            idx = np.round(idx).astype(int)
+            s, x, y = idx
+    
+            # Mark a region around (x, y) in all layers at or below this z as untraversable
+            xy_radius = int(np.ceil(xy_buffer / self.resolution))
+            for ds in range(self.elev_g.shape[0]):
+                # Only mark if the elevation is below or close to the obstacle point
+                elev = self.elev_g[ds, y, x]
+                if abs(elev - pt[2]) <= z_buffer:
+                    x_min = max(0, x - xy_radius)
+                    x_max = min(self.elev_g.shape[2], x + xy_radius + 1)
+                    y_min = max(0, y - xy_radius)
+                    y_max = min(self.elev_g.shape[1], y + xy_radius + 1)
+                    self.trav[ds, y_min:y_max, x_min:x_max] = self.cost_barrier  # Mark as untraversable
+    
         self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
 
         
@@ -682,23 +665,24 @@ class TomogramCoveragePlanner(object):
 
 
 
-    def compute_explored_voxels(self, candidate_points_xyz, angles):
+    def compute_explored_voxels(self, candidate_points_xyz, angles, use_dilation=True):
         """
         Compute the explored voxels based on candidate points and raycasting.
-
+    
         Args:
             candidate_points_xyz (np.ndarray): Candidate points in world coordinates.
             angles (np.ndarray): Angles for each candidate point.
-
+            use_dilation (bool): Whether to apply dilation to fill FOV gaps.
+    
         Returns:
             cp.ndarray: Updated explored voxel grid.
         """
-        
-        # explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
+        import cupyx.scipy.ndimage as cp_ndimage
+    
         explored_voxels_max = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
         candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.6])  # Adjust for z-axis
         explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
-        for i,candidate_pose in enumerate(candidate_points_xyz):
+        for i, candidate_pose in enumerate(candidate_points_xyz):
             # Perform raycasting for the current pose
             print(f"Exploring candidate pose: {candidate_pose}")
             orientation = np.array([
@@ -707,20 +691,32 @@ class TomogramCoveragePlanner(object):
                 [0, 0, 1]
             ])
             visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert,self.fov_hor,self.sensor_range,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape, self.hash_grid,
+                self.fov_vert, self.fov_hor, self.sensor_range,
                 self.resolution_raycast, n_rays=50)
             # Maximum possible visibility
             visible_max = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, 360, self.sensor_range_analysis,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape, self.hash_grid,
+                self.fov_vert, 360, self.sensor_range_analysis,
                 self.resolution_raycast, n_rays=50)
             for v in visible_max:
                 local_idx = tuple(v - self.min_idx)
                 explored_voxels_max[local_idx] = True
             for v in visible:
-                    local_idx = tuple(v - self.min_idx)
-                    # explored_voxels[local_idx] = True
-                    explored_voxels_candidate[i][local_idx] = True
-        
+                local_idx = tuple(v - self.min_idx)
+                explored_voxels_candidate[i][local_idx] = True
+    
+        # --- Dilation to fill FOV gaps (same as nextBestView) ---
+        if use_dilation:
+            struct = cp.ones((3, 3, 1), dtype=cp.bool_)  # x×y×z
+            explored_voxels_max = cp_ndimage.binary_dilation(explored_voxels_max, structure=struct)
+            explored_voxels_max = cp_ndimage.binary_dilation(explored_voxels_max, structure=struct)
+            explored_voxels_max = cp.logical_and(explored_voxels_max, self.hash_grid)
+            for i in range(explored_voxels_candidate.shape[0]):
+                explored_voxels_candidate[i] = cp_ndimage.binary_dilation(explored_voxels_candidate[i], structure=struct)
+                explored_voxels_candidate[i] = cp_ndimage.binary_dilation(explored_voxels_candidate[i], structure=struct)
+                explored_voxels_candidate[i] = cp.logical_and(explored_voxels_candidate[i], self.hash_grid)
+    
         return explored_voxels_max, explored_voxels_candidate
 
     def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles, use_dilation=False):

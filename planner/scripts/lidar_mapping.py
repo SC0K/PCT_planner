@@ -29,10 +29,10 @@ class LidarMapperNode:
         self.grid_shape = planner.grid_shape  
         self.min_idx = planner.min_idx
 
-        self.lidar_voxel_pub = rospy.Publisher("/current_lidar_voxel_grid", PointCloud2, queue_size=10)
+        self.lidar_voxel_pub = rospy.Publisher("/current_lidar_voxel_grid", PointCloud2, queue_size=1)
         rospy.Subscriber("/depth_camera_front_upper/point_cloud_self_filtered", PointCloud2, self.lidar_callback)
-        self.lidar_voxel_idx_pub = rospy.Publisher("/current_lidar_voxel_indices", Int32MultiArray, queue_size=10)
-        self.lidar_new_voxel_idx_pub = rospy.Publisher("/current_lidar_new_voxel_indices", Int32MultiArray, queue_size=10)
+        self.lidar_voxel_idx_pub = rospy.Publisher("/current_lidar_voxel_indices", Int32MultiArray, queue_size=1)
+        self.lidar_new_voxel_idx_pub = rospy.Publisher("/current_lidar_new_voxel_indices", Int32MultiArray, queue_size=1)
         self.persistence_counter = np.zeros(planner.grid_shape, dtype=np.uint16)
         self.persistence_threshold = 10
         self.added_voxels = set()

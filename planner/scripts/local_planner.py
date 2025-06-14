@@ -60,7 +60,7 @@ class LidarMappingNode:
         self.added_voxels_projected_set = set()
         self.use_dilation = False
 
-        self.process_voxel_timer = rospy.Timer(rospy.Duration(1.0), self.find_critical_points)
+        self.process_voxel_timer = rospy.Timer(rospy.Duration(0.5), self.find_critical_points)
 
         candidate_points_xyz = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points.npy")
         candidate_points_angles = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_angles.npy")
@@ -77,15 +77,15 @@ class LidarMappingNode:
         self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, self.candidate_points_angles)
         self.scanned_voxels = cp.zeros_like(self.target_voxels, dtype=cp.bool_)
 
-        self.target_voxels_pc_pub = rospy.Publisher("target_voxels_pc", PointCloud2, queue_size=1)
-        self.critical_points_pub = rospy.Publisher("critical_points", PointCloud2, queue_size=1)
-        self.scanned_voxels_pc_pub = rospy.Publisher("scanned_voxels_pc", PointCloud2, queue_size=1)
-        self.current_target_voxels_pc_pub = rospy.Publisher("current_target_voxels_pc", PointCloud2, queue_size=1)
+        self.target_voxels_pc_pub = rospy.Publisher("target_voxels_pc", PointCloud2, queue_size=10)
+        self.critical_points_pub = rospy.Publisher("critical_points", PointCloud2, queue_size=10)
+        self.scanned_voxels_pc_pub = rospy.Publisher("scanned_voxels_pc", PointCloud2, queue_size=10)
+        self.current_target_voxels_pc_pub = rospy.Publisher("current_target_voxels_pc", PointCloud2, queue_size=10)
         self.goal_pub = rospy.Publisher("/goal", PoseStamped, queue_size=1)
-        self.added_voxels_pc_pub = rospy.Publisher("added_voxels_pc", PointCloud2, queue_size=1)
+        self.added_voxels_pc_pub = rospy.Publisher("added_voxels_pc", PointCloud2, queue_size=10)
         self.tomogram_pub = rospy.Publisher("tomograph", PointCloud2, latch=True, queue_size=1)
-        self.remaining_target_voxels_pc_pub = rospy.Publisher("remaining_target_voxels_pc", PointCloud2, queue_size=1)
-        self.replanned_path_pub = rospy.Publisher("/replanned_coverage_path", Path, queue_size=1)
+        self.remaining_target_voxels_pc_pub = rospy.Publisher("remaining_target_voxels_pc", PointCloud2, queue_size=10)
+        self.replanned_path_pub = rospy.Publisher("/replanned_coverage_path", Path, queue_size=10)
         
 
         rospy.Subscriber("/anymal/pose_in_sim_world", Odometry, self.robot_pose_callback)
@@ -263,7 +263,7 @@ class LidarMappingNode:
                             # self.coverage_angle = angle
                             self.state = self.STATE_COVERAGE
                             return
-    def find_critical_points(self, event):
+    def find_critical_points(self,event):
         # --- Process new voxels in buffer ---
         if self.new_voxel_buffer:
             # Remove duplicates
@@ -291,13 +291,14 @@ class LidarMappingNode:
             
             # 2x2 region directions: (x, y) offsets for each region
             region_offsets = [
-                [(0, 0), (1, 0), (0, 1), (1, 1)],      # +x, +y
-                [(0, 0), (1, 0), (0, -1), (1, -1)],    # +x, -y
-                [(0, 0), (-1, 0), (0, 1), (-1, 1)],    # -x, +y
-                [(0, 0), (-1, 0), (0, -1), (-1, -1)]   # -x, -y
+                [ (1, 0), (0, 1), (1, 1)],      # +x, +y
+                [ (1, 0), (0, -1), (1, -1)],    # +x, -y
+                [ (-1, 0), (0, 1), (-1, 1)],    # -x, +y
+                [ (-1, 0), (0, -1), (-1, -1)]   # -x, -y
             ]
             
             for idx in projected_list_buffer:
+                #  or projected_list_buffer
                 x, y, z = idx
                 for region in region_offsets:
                     region_indices = []
@@ -305,23 +306,24 @@ class LidarMappingNode:
                         nx, ny = x + dx, y + dy
                         if 0 <= nx < grid_shape[0] and 0 <= ny < grid_shape[1]:
                             region_indices.append((nx, ny, z))
-                    if len(region_indices) < 4:
+                    if len(region_indices) < 3:
                         continue
                     # Count projected voxels in this region (using all added voxels)
-                    projected_count = sum((ix, iy, iz) in self.added_voxels_projected_set for ix, iy, iz in region_indices)
-                    if projected_count != 1:
+                    projected_count = sum((ix, iy, iz) in self.added_voxels_projected_set for ix, iy, iz in region_indices) + 1 # +1 for the center voxel
+                    if projected_count > 1:
                         continue
                     # Check for both scanned and unscanned target voxels
                     has_scanned = any(scanned[ix, iy, iz] for ix, iy, iz in region_indices)
                     has_unscanned = any(remaining_target[ix, iy, iz] for ix, iy, iz in region_indices)
                     if has_scanned and has_unscanned:
                         critical_points.append(idx)
+                        self.critical_points.append(idx)
                         break  # Only need one region to satisfy
-            self.critical_points = critical_points
+            self.prune_invalid_critical_points()
 
             # === Publish critical points as PointCloud2 for visualization ===
             if len(critical_points) > 0:
-                critical_points_xyz = (np.array(critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
+                critical_points_xyz = (np.array(self.critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
                 header = std_msgs.msg.Header()
                 header.stamp = rospy.Time.now()
                 header.frame_id = "map"
@@ -331,6 +333,53 @@ class LidarMappingNode:
             ## Only update tomograph if there are new voxels
             if len(unique_voxels) > 0:
                 self.add_new_obstacles_to_tomograph(unique_voxels)
+    def prune_invalid_critical_points(self):
+        """
+        Remove critical points that are no longer valid.
+        A critical point is invalid if:
+        - It is now scanned, or
+        - The 2x2 region around it no longer meets the critical point criteria.
+        """
+        if not self.critical_points:
+            return
+
+        grid_shape = self.planner.grid_shape
+        scanned = self.scanned_voxels.get()
+        target = self.target_voxels.get()
+        remaining_target = target & ~scanned
+        projected_set = self.added_voxels_projected_set
+
+        region_offsets = [
+            [ (1, 0), (0, 1), (1, 1)],      # +x, +y
+            [ (1, 0), (0, -1), (1, -1)],    # +x, -y
+            [ (-1, 0), (0, 1), (-1, 1)],    # -x, +y
+            [ (-1, 0), (0, -1), (-1, -1)]   # -x, -y
+        ]
+
+        valid_critical_points = []
+        for idx in self.critical_points:
+            x, y, z = idx
+            still_critical = False
+            for region in region_offsets:
+                region_indices = []
+                for dx, dy in region:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < grid_shape[0] and 0 <= ny < grid_shape[1]:
+                        region_indices.append((nx, ny, z))
+                if len(region_indices) < 3:
+                    continue
+                projected_count = sum((ix, iy, iz) in projected_set for ix, iy, iz in region_indices) + 1 # +1 for the center voxel
+                if projected_count > 1:
+                    continue
+                has_scanned = any(scanned[ix, iy, iz] for ix, iy, iz in region_indices)
+                has_unscanned = any(remaining_target[ix, iy, iz] for ix, iy, iz in region_indices)
+                if has_scanned and has_unscanned:
+                    still_critical = True
+                    break
+            if still_critical:
+                valid_critical_points.append(idx)
+
+        self.critical_points = valid_critical_points
     def handle_coverage(self):
         # Always recompute the unscanned region and plan to its center
         scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.next_candidate_xyz_idx-1]
@@ -381,7 +430,6 @@ class LidarMappingNode:
         unscanned_center[2] += 0.5
     
         # Replan path at every step using the latest tomograph
-        self.new_voxel_buffer = []
         planned_traj = self.planner.plan(robot_pos, unscanned_center)
         if planned_traj is None or len(planned_traj) < 2:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
@@ -453,7 +501,6 @@ class LidarMappingNode:
         self.planner.add_obstacle_points(world_points)
     
         rospy.loginfo(f"Added {len(world_points)} new obstacle points to tomograph.")
-        self.publishTomogram(self.planner.elev_g, self.planner.trav)
         return True
         
     def publishTomogram(self, elev_g, trav):
@@ -579,26 +626,22 @@ class LidarMappingNode:
         indices = np.array(msg.data, dtype=np.int32).reshape(-1, 3)
         if indices.shape[0] == 0:
             return
-        x_idx = indices[:, 0]
-        y_idx = indices[:, 1]
-        z_idx = indices[:, 2]
+    
+        # Move indices to GPU for fast assignment
+        indices_cp = cp.asarray(indices)
+        x_idx, y_idx, z_idx = indices_cp[:, 0], indices_cp[:, 1], indices_cp[:, 2]
         self.scanned_voxels[x_idx, y_idx, z_idx] = True
     
-        # --- Dilation control for scanned voxels ---
-        if self.use_dilation:
-            tolerance_voxels = self.dilation_size
-            structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
-            dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
-        else:
-            dilated_scanned_voxels = self.scanned_voxels
+        # # --- Dilation control for scanned voxels ---
+        # if self.use_dilation:
+        #     tolerance_voxels = self.dilation_size
+        #     structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
+        #     dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
+        # else:
+        #     dilated_scanned_voxels = self.scanned_voxels
     
-        scanned_target_voxels = dilated_scanned_voxels & self.target_voxels
-        remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
-    
-        # rospy.loginfo(f"Scanned target voxels: {cp.sum(scanned_target_voxels).get()}")
-        # rospy.loginfo(f"Remaining target voxels: {cp.sum(remaining_target_voxels).get()}")
-        self.publish_scanned_voxels()
-        self.publish_remaining_target_voxels()
+        # scanned_target_voxels = dilated_scanned_voxels & self.target_voxels
+        # remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
 
     def lidar_new_voxel_indices_callback(self, msg):
         indices = np.array(msg.data, dtype=np.int32).reshape(-1, 3)
@@ -668,13 +711,17 @@ class LidarMappingNode:
         #     self.critical_points_pub.publish(critical_pc2)
     
         # self.add_new_obstacles_to_tomograph(indices)
-        self.publish_added_voxels()
         
 
     def follow_path(self):
         self.start_time = time.time()
-        rate = rospy.Rate(2)    # 10 Hz
+        rate = rospy.Rate(10)    # 10 Hz
         while not rospy.is_shutdown():
+            self.publish_scanned_voxels()
+            self.publish_remaining_target_voxels()
+            self.publish_added_voxels()
+            self.publishTomogram(self.planner.elev_g, self.planner.trav)
+
             self.step()
             rate.sleep()
 
