@@ -10,6 +10,7 @@ import cupy as cp
 import sklearn.cluster
 import time
 import cupyx.scipy.ndimage as cp_ndimage
+import rospy
 
 
 sys.path.append('../')
@@ -308,18 +309,13 @@ class TomogramCoveragePlanner(object):
         return adj_matrix
         
     def plan_with_idx(self, start_pos, end_pos):
-        # self.start_idx[1:] = self.pos2idx(start_pos)
-        # self.end_idx[1:] = self.pos2idx(end_pos)
-        # self.start_idx[:] = self.pos2idx_3D(start_pos)
-        # self.end_idx[:] = self.pos2idx_3D(end_pos)
-        
 
         self.start_idx = np.array([start_pos[0], start_pos[2], start_pos[1]], dtype=np.int32)   # planner needs s,y,x whereas the grid index is s,x,y
         self.end_idx = np.array([end_pos[0], end_pos[2], end_pos[1]], dtype=np.int32)
         print("start_idx:", self.start_idx)
         print("end_idx:", self.end_idx)
 
-        self.planner.plan(self.start_idx, self.end_idx, True)
+        self.planner.plan(self.start_idx, self.end_idx, False)
         path_finder: a_star.Astar = self.planner.get_path_finder()
         path = path_finder.get_result_matrix()
         if len(path) == 0:
@@ -374,9 +370,70 @@ class TomogramCoveragePlanner(object):
         y_idx = (traj.shape[-1] - 1) // 2
         traj_3d = np.stack([traj[:, 0], traj[:, y_idx], heights / self.resolution], axis=1)
         traj_3d = transTrajGrid2Map(self.map_dim, self.center, self.resolution, traj_3d)
+    def plan_online(self, start_pos, end_pos):
+        self.start_idx[:] = self.pos2idx_3D_plan(start_pos)
+        self.end_idx[:] = self.pos2idx_3D_plan(end_pos)
+        print("start_idx:", self.start_idx)
+        print("end_idx:", self.end_idx)
 
+        self.planner.plan(self.start_idx, self.end_idx, True)
+        path_finder: a_star.Astar = self.planner.get_path_finder()
+        path = path_finder.get_result_matrix()
+
+        print("path:", path)    
+        if len(path) == 0:
+            rospy.logerr("No path found between start and end positions.")
+            return None
+        traj_3d = np.array([self.idx2pos_3D(idx) for idx in path]) + np.array([0,0, 0.5])  # Add a small offset to z for visualization
         return traj_3d
     
+    def online_local_replan(self, start_pos, target_pos, max_radius=10, step=1, num_angles=16, height_tol=0.2):
+        """
+        Given a target position in world coordinates, find the closest traversable grid cell
+        around the target (in a circle), and plan a path from start_pos to it.
+    
+        Args:
+            start_pos (np.ndarray): (x, y, z) in world coordinates (robot's current position).
+            target_pos (np.ndarray): (x, y, z) in world coordinates (desired target).
+            max_radius (int): Maximum search radius in grid cells.
+            step (int): Step size in grid cells.
+            num_angles (int): Number of angles to sample per radius.
+            height_tol (float): Allowed height difference (meters) for the same layer.
+    
+        Returns:
+            np.ndarray or None: Planned trajectory from start_pos to reachable goal, or None if not found.
+        """
+        # Convert to grid idx (s, x, y)
+        idx = self.pos2idx_3D_plan(target_pos)
+        s, x, y = np.round(idx).astype(int)
+        grid_shape = self.trav.shape
+        target_height = target_pos[2]
+    
+        reachable_goal = None
+        # Search in increasing radius
+        for r in range(0, max_radius + 1, step):
+            for theta in np.linspace(0, 2 * np.pi, num_angles, endpoint=False):
+                dx = int(round(r * np.cos(theta)))
+                dy = int(round(r * np.sin(theta)))
+                xx, yy = x + dx, y + dy
+                # Check bounds
+                if 0 <= s < grid_shape[0] and 0 <= xx < grid_shape[1] and 0 <= yy < grid_shape[2]:
+                    elev = self.elev_g[s, xx, yy]
+                    # Check traversability and height similarity
+                    if self.trav[s, xx, yy] < 20 and elev > -90 and abs(elev - target_height) < height_tol:
+                        # Convert back to world coordinates
+                        candidate_idx = np.array([s,yy, xx])
+                        reachable_goal = self.idx2pos_3D(candidate_idx)
+                        break
+            if reachable_goal is not None:
+                break
+    
+        if reachable_goal is not None:
+            # Plan a path from start_pos to reachable_goal
+            planned_traj = self.plan_online(start_pos, reachable_goal)
+            return planned_traj
+        else:
+            return None
     def pos2idx(self, pos):
         pos = pos - self.center
         idx = np.round(pos / self.resolution).astype(np.int32) + self.offset
@@ -531,14 +588,14 @@ class TomogramCoveragePlanner(object):
     def idx2pos_3D(self, idx):
         """
         Convert grid indices to map coordinates.
-
+    
         Args:
             idx (np.ndarray): The grid indices (s, x, y).
-
+    
         Returns:
             np.ndarray: The map coordinates (x, y, z).
         """
-        # Convert grid indices to map coordinates
+        idx = np.array(idx, dtype=int)  # Ensure integer indices
         map_x = (idx[1] - self.offset[0]) * self.resolution + self.center[0]
         map_y = (idx[2] - self.offset[1]) * self.resolution + self.center[1]
         map_z = self.elev_g[idx[0], idx[1], idx[2]]

@@ -64,14 +64,17 @@ class LidarMappingNode:
 
         candidate_points_xyz = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points.npy")
         candidate_points_angles = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_angles.npy")
+        candidate_points_idx = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_idx.npy")
         self.candidate_path_idx = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/shortest_path_idx.npy")
         self.global_path = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/full_trajectory.npy")
+        self.segment_path = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/segment_trajectory.npy", allow_pickle=True)
         self.candidate_points_xyz = np.zeros_like(candidate_points_xyz)
         self.candidate_points_angles = np.zeros_like(candidate_points_angles)
         self.hash_grid = self.planner.hash_grid
         for i, idx in enumerate(self.candidate_path_idx):
             self.candidate_points_xyz[i] = candidate_points_xyz[idx] + np.array([0,0,0.5])
             self.candidate_points_angles[i] = candidate_points_angles[idx]    
+            self.candidate_points_idx = candidate_points_idx[idx]
         
         self.next_candidate_xyz_idx = 0
         self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, self.candidate_points_angles)
@@ -86,6 +89,7 @@ class LidarMappingNode:
         self.tomogram_pub = rospy.Publisher("tomograph", PointCloud2, latch=True, queue_size=1)
         self.remaining_target_voxels_pc_pub = rospy.Publisher("remaining_target_voxels_pc", PointCloud2, queue_size=10)
         self.replanned_path_pub = rospy.Publisher("/replanned_coverage_path", Path, queue_size=10)
+        self.global_path_pub = rospy.Publisher("/global_path", Path, queue_size=10)
         
 
         rospy.Subscriber("/anymal/pose_in_sim_world", Odometry, self.robot_pose_callback)
@@ -266,11 +270,9 @@ class LidarMappingNode:
     def find_critical_points(self,event):
         # --- Process new voxels in buffer ---
         if self.new_voxel_buffer:
-            # Remove duplicates
-            unique_voxels = list(set(self.new_voxel_buffer))
+            unique_voxels = self.new_voxel_buffer
             self.new_voxel_buffer = []
-        
-            # --- Efficient projection of new voxels onto hash grid ---
+
             projected_hash_voxels_buffer = set()
             grid_shape = self.planner.grid_shape
             for idx in unique_voxels:
@@ -421,16 +423,16 @@ class LidarMappingNode:
     
         # Compute the unscanned center and shift as in handle_follow_path
         unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-        shift_distance = 0.25
+        shift_distance = 1
         angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
         rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, angle))[:3, :3]
         shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])
         unscanned_center += shift_vector
         robot_pos = np.array(self.robot_position)
-        unscanned_center[2] += 0.5
-    
-        # Replan path at every step using the latest tomograph
-        planned_traj = self.planner.plan(robot_pos, unscanned_center)
+        unscanned_center[2] = robot_pos[2]  # Keep the same height as the robot
+        
+        # Use online_local_replan to find a traversable goal and plan a path
+        planned_traj = self.planner.online_local_replan(robot_pos, unscanned_center, max_radius=10, step=1, num_angles=16, height_tol=1.5)
         if planned_traj is None or len(planned_traj) < 2:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
             self.state = self.STATE_FOLLOW_PATH
@@ -457,7 +459,7 @@ class LidarMappingNode:
         closest_idx = np.argmin(dists)
     
         # If close to the last point, finish coverage
-        distance_threshold = 1.0  # meters
+        distance_threshold = 0.2  # meters
         if np.linalg.norm(robot_pos - planned_traj[-1]) < distance_threshold:
             rospy.loginfo("Reached coverage target.")
             self.state = self.STATE_FOLLOW_PATH
@@ -466,8 +468,8 @@ class LidarMappingNode:
             return
     
         # Otherwise, send the next point as goal, always facing the unscanned center
-        if closest_idx + 4 < len(planned_traj):
-            next_goal = planned_traj[closest_idx + 4]
+        if closest_idx + 1 < len(planned_traj):
+            next_goal = planned_traj[closest_idx + 1]
         else:
             next_goal = planned_traj[-1]
     
@@ -489,6 +491,7 @@ class LidarMappingNode:
     def add_new_obstacles_to_tomograph(self, voxel_list):
         """
         Add newly detected obstacle voxels to the tomograph and update the planner.
+        Also replan the path segment between current and next candidate points if needed.
         """
         if voxel_list is None or len(voxel_list) == 0:
             return False
@@ -501,6 +504,24 @@ class LidarMappingNode:
         self.planner.add_obstacle_points(world_points)
     
         rospy.loginfo(f"Added {len(world_points)} new obstacle points to tomograph.")
+    
+        # # --- Dynamic replanning between candidate points using segment_path ---
+        # if self.candidate_points_idx < len(self.candidate_points_idx) - 1:
+        #     start = self.candidate_points_idx[self.next_candidate_xyz_idx]
+        #     goal = self.candidate_points_idx[self.next_candidate_xyz_idx+1]
+        #     replanned_path = self.planner.plan_with_idx(start, goal)
+        #     if replanned_path is not None and len(replanned_path) > 1:
+        #         # Use the corresponding segment from self.segment_path for comparison
+        #         segment = self.segment_path[self.next_candidate_xyz_idx]
+        #         min_len = min(len(segment), len(replanned_path))
+        #         diff = np.linalg.norm(segment[:min_len] - replanned_path[:min_len], axis=1).mean()
+        #         # Threshold for "too different"
+        #         if diff > 0.5:
+        #             rospy.loginfo("Replanned path differs significantly from original segment. Updating segment_path and global_path.")
+        #             # Update segment_path
+        #             self.segment_path[self.next_candidate_xyz_idx] = replanned_path
+        #             # Recompute global_path by concatenating all segments
+        #             self.global_path = np.concatenate(self.segment_path, axis=0)
         return True
         
     def publishTomogram(self, elev_g, trav):
@@ -620,6 +641,20 @@ class LidarMappingNode:
         header.frame_id = "map"
         pc2_msg = pc2.create_cloud_xyz32(header, points)
         self.remaining_target_voxels_pc_pub.publish(pc2_msg)
+
+    def publish_global_path(self):
+        path_msg = Path()
+        path_msg.header.stamp = rospy.Time.now()
+        path_msg.header.frame_id = "map"
+        for pt in self.global_path:
+            pose = PoseStamped()
+            pose.header = path_msg.header
+            pose.pose.position.x = pt[0]
+            pose.pose.position.y = pt[1]
+            pose.pose.position.z = pt[2]
+            pose.pose.orientation = Quaternion(0, 0, 0, 1)
+            path_msg.poses.append(pose)
+        self.global_path_pub.publish(path_msg)
         
    
     def lidar_grid_callback(self, msg):
@@ -715,12 +750,13 @@ class LidarMappingNode:
 
     def follow_path(self):
         self.start_time = time.time()
-        rate = rospy.Rate(10)    # 10 Hz
+        rate = rospy.Rate(5)    # 10 Hz
         while not rospy.is_shutdown():
             self.publish_scanned_voxels()
             self.publish_remaining_target_voxels()
             self.publish_added_voxels()
             self.publishTomogram(self.planner.elev_g, self.planner.trav)
+            self.publish_global_path()
 
             self.step()
             rate.sleep()
