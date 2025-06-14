@@ -92,7 +92,6 @@ class LidarMapperNode:
             self.lidar_voxel_idx_pub.publish(idx_msg)
     
             # --- Find and publish new voxels (outside hash grid with dilation) ---
-            new_voxels = []
             if indices_np.shape[0] > 0:
                 indices_cp = cp.array(indices_np)
                 tx = indices_cp[:, 0]
@@ -114,17 +113,10 @@ class LidarMapperNode:
     
                 not_in_dilated_hash_mask = ~(dilated_hash_grid[tx, ty, tz])
                 filtered_indices = indices_np[cp.asnumpy(not_in_dilated_hash_mask)]
-    
-                for idx in filtered_indices:
-                    idx_tuple = tuple(idx)
-                    if idx_tuple not in self.added_voxels:
-                        self.added_voxels.add(idx_tuple)
-                        new_voxels.append(idx)
-    
-            if len(new_voxels) > 0:
+            if len(filtered_indices) > 0:
                 msg_indices = Int32MultiArray()
-                msg_indices.data = np.array(new_voxels, dtype=np.int32).flatten().tolist()
-                msg_indices.layout.dim.append(MultiArrayDimension(label="voxel", size=len(new_voxels), stride=len(new_voxels)*3))
+                msg_indices.data = np.array(filtered_indices, dtype=np.int32).flatten().tolist()
+                msg_indices.layout.dim.append(MultiArrayDimension(label="voxel", size=len(filtered_indices), stride=len(filtered_indices)*3))
                 msg_indices.layout.dim.append(MultiArrayDimension(label="xyz", size=3, stride=3))
                 self.lidar_new_voxel_idx_pub.publish(msg_indices)
     

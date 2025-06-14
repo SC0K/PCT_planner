@@ -240,7 +240,7 @@ class TomogramCoveragePlanner(object):
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
     
-    def add_obstacle_points(self, world_points, cluster_eps=0.5, min_samples=3, z_buffer=0.5, xy_buffer=0.25):
+    def add_obstacle_points(self, world_points, cluster_eps=0.5, min_samples=3, z_buffer=0.5, xy_buffer=0.2):
         """
         Add new obstacle points to the tomograph by clustering and marking the lowest points in each cluster as untraversable.
 
@@ -363,9 +363,6 @@ class TomogramCoveragePlanner(object):
         return traj_3d
     
     def plan(self, start_pos, end_pos):
-        # TODO: calculate slice index. By default the start and end pos are all at slice 0
-        # self.start_idx[1:] = self.pos2idx(start_pos)
-        # self.end_idx[1:] = self.pos2idx(end_pos)
         self.start_idx[:] = self.pos2idx_3D_plan(start_pos)
         self.end_idx[:] = self.pos2idx_3D_plan(end_pos)
         print("start_idx:", self.start_idx)
@@ -714,7 +711,7 @@ class TomogramCoveragePlanner(object):
                 self.resolution_raycast, n_rays=50)
             # Maximum possible visibility
             visible_max = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, self.fov_hor, self.sensor_range_analysis,
+                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,self.hash_grid,self.fov_vert, 360, self.sensor_range_analysis,
                 self.resolution_raycast, n_rays=50)
             for v in visible_max:
                 local_idx = tuple(v - self.min_idx)

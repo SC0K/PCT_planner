@@ -54,6 +54,13 @@ class LidarMappingNode:
         self.robot_position = None  
         self.persistence_counter = cp.zeros(self.planner.grid_shape, dtype=cp.uint16)
         self.persistence_threshold = 10
+        self.added_voxels = []
+        self.new_voxel_buffer = []
+        self.critical_points = []
+        self.added_voxels_projected_set = set()
+        self.use_dilation = False
+
+        self.process_voxel_timer = rospy.Timer(rospy.Duration(1.0), self.find_critical_points)
 
         candidate_points_xyz = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points.npy")
         candidate_points_angles = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_angles.npy")
@@ -70,13 +77,14 @@ class LidarMappingNode:
         self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, self.candidate_points_angles)
         self.scanned_voxels = cp.zeros_like(self.target_voxels, dtype=cp.bool_)
 
-        self.target_voxels_pc_pub = rospy.Publisher("target_voxels_pc", PointCloud2, queue_size=10)
-        self.scanned_voxels_pc_pub = rospy.Publisher("scanned_voxels_pc", PointCloud2, queue_size=10)
-        self.current_target_voxels_pc_pub = rospy.Publisher("current_target_voxels_pc", PointCloud2, queue_size=10)
-        self.goal_pub = rospy.Publisher("/goal", PoseStamped, queue_size=10)
-        self.added_voxels_pc_pub = rospy.Publisher("added_voxels_pc", PointCloud2, queue_size=10)
+        self.target_voxels_pc_pub = rospy.Publisher("target_voxels_pc", PointCloud2, queue_size=1)
+        self.critical_points_pub = rospy.Publisher("critical_points", PointCloud2, queue_size=1)
+        self.scanned_voxels_pc_pub = rospy.Publisher("scanned_voxels_pc", PointCloud2, queue_size=1)
+        self.current_target_voxels_pc_pub = rospy.Publisher("current_target_voxels_pc", PointCloud2, queue_size=1)
+        self.goal_pub = rospy.Publisher("/goal", PoseStamped, queue_size=1)
+        self.added_voxels_pc_pub = rospy.Publisher("added_voxels_pc", PointCloud2, queue_size=1)
         self.tomogram_pub = rospy.Publisher("tomograph", PointCloud2, latch=True, queue_size=1)
-        self.remaining_target_voxels_pc_pub = rospy.Publisher("remaining_target_voxels_pc", PointCloud2, queue_size=10)
+        self.remaining_target_voxels_pc_pub = rospy.Publisher("remaining_target_voxels_pc", PointCloud2, queue_size=1)
         self.replanned_path_pub = rospy.Publisher("/replanned_coverage_path", Path, queue_size=1)
         
 
@@ -255,7 +263,74 @@ class LidarMappingNode:
                             # self.coverage_angle = angle
                             self.state = self.STATE_COVERAGE
                             return
-                        
+    def find_critical_points(self, event):
+        # --- Process new voxels in buffer ---
+        if self.new_voxel_buffer:
+            # Remove duplicates
+            unique_voxels = list(set(self.new_voxel_buffer))
+            self.new_voxel_buffer = []
+        
+            # --- Efficient projection of new voxels onto hash grid ---
+            projected_hash_voxels_buffer = set()
+            grid_shape = self.planner.grid_shape
+            for idx in unique_voxels:
+                x, y, z = idx
+                for zz in range(z, -1, -1):
+                    if self.hash_grid[x, y, zz]:
+                        projected_hash_voxels_buffer.add((x, y, zz))
+                        self.added_voxels_projected_set.add((x, y, zz))
+                        break  # Only project to the first hash_grid cell below
+        
+            # === Find critical points among projected_hash_voxels ===
+            critical_points = []
+            scanned = self.scanned_voxels.get()
+            target = self.target_voxels.get()
+            remaining_target = target & ~scanned
+            projected_list_buffer = list(projected_hash_voxels_buffer)
+            # Use all added voxels for the projected set
+            
+            # 2x2 region directions: (x, y) offsets for each region
+            region_offsets = [
+                [(0, 0), (1, 0), (0, 1), (1, 1)],      # +x, +y
+                [(0, 0), (1, 0), (0, -1), (1, -1)],    # +x, -y
+                [(0, 0), (-1, 0), (0, 1), (-1, 1)],    # -x, +y
+                [(0, 0), (-1, 0), (0, -1), (-1, -1)]   # -x, -y
+            ]
+            
+            for idx in projected_list_buffer:
+                x, y, z = idx
+                for region in region_offsets:
+                    region_indices = []
+                    for dx, dy in region:
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < grid_shape[0] and 0 <= ny < grid_shape[1]:
+                            region_indices.append((nx, ny, z))
+                    if len(region_indices) < 4:
+                        continue
+                    # Count projected voxels in this region (using all added voxels)
+                    projected_count = sum((ix, iy, iz) in self.added_voxels_projected_set for ix, iy, iz in region_indices)
+                    if projected_count != 1:
+                        continue
+                    # Check for both scanned and unscanned target voxels
+                    has_scanned = any(scanned[ix, iy, iz] for ix, iy, iz in region_indices)
+                    has_unscanned = any(remaining_target[ix, iy, iz] for ix, iy, iz in region_indices)
+                    if has_scanned and has_unscanned:
+                        critical_points.append(idx)
+                        break  # Only need one region to satisfy
+            self.critical_points = critical_points
+
+            # === Publish critical points as PointCloud2 for visualization ===
+            if len(critical_points) > 0:
+                critical_points_xyz = (np.array(critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
+                header = std_msgs.msg.Header()
+                header.stamp = rospy.Time.now()
+                header.frame_id = "map"
+                critical_pc2 = pc2.create_cloud_xyz32(header, critical_points_xyz.astype(np.float32))
+                self.critical_points_pub.publish(critical_pc2)         
+            
+            ## Only update tomograph if there are new voxels
+            if len(unique_voxels) > 0:
+                self.add_new_obstacles_to_tomograph(unique_voxels)
     def handle_coverage(self):
         # Always recompute the unscanned region and plan to its center
         scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.next_candidate_xyz_idx-1]
@@ -297,7 +372,7 @@ class LidarMappingNode:
     
         # Compute the unscanned center and shift as in handle_follow_path
         unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-        shift_distance = 0
+        shift_distance = 0.25
         angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
         rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, angle))[:3, :3]
         shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])
@@ -306,6 +381,7 @@ class LidarMappingNode:
         unscanned_center[2] += 0.5
     
         # Replan path at every step using the latest tomograph
+        self.new_voxel_buffer = []
         planned_traj = self.planner.plan(robot_pos, unscanned_center)
         if planned_traj is None or len(planned_traj) < 2:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
@@ -498,127 +574,6 @@ class LidarMappingNode:
         pc2_msg = pc2.create_cloud_xyz32(header, points)
         self.remaining_target_voxels_pc_pub.publish(pc2_msg)
         
-    # def lidar_grid_callback(self, msg):
-    #     points = np.array([[p[0], p[1], p[2]] for p in pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)])
-    #     if points.shape[0] == 0:
-    #         return
-    #     voxel_indices = np.floor(points / self.planner.voxel_size).astype(np.int32) - np.array(self.planner.min_idx)
-    #     valid_mask = np.all((voxel_indices >= 0) & (voxel_indices < np.array(self.planner.grid_shape)), axis=1)
-    #     valid_voxel_indices = voxel_indices[valid_mask]
-    #     if valid_voxel_indices.shape[0] == 0:
-    #         return
-    
-    #     x_idx = valid_voxel_indices[:, 0]
-    #     y_idx = valid_voxel_indices[:, 1]
-    #     z_idx = valid_voxel_indices[:, 2]
-    #     self.scanned_voxels[x_idx, y_idx, z_idx] = True
-    
-    #     self.persistence_counter[x_idx, y_idx, z_idx] += 1
-    #     just_added_mask = (self.persistence_counter[x_idx, y_idx, z_idx] == self.persistence_threshold)
-    #     just_added_mask = cp.asnumpy(just_added_mask)
-    #     just_added_indices = valid_voxel_indices[just_added_mask]
-    
-    #     if not hasattr(self, 'added_voxels'):
-    #         self.added_voxels = []
-    
-    #     # Track only new voxels for this callback
-    #     new_voxels = []
-    #     if just_added_indices.shape[0] > 0:
-    #         just_added_indices_cp = cp.array(just_added_indices)
-    #         tx = just_added_indices_cp[:, 0]
-    #         ty = just_added_indices_cp[:, 1]
-    #         tz = just_added_indices_cp[:, 2]
-    #         if self.use_dilation_new_obstacles:
-    #             tolerance_voxels = self.dilation_size
-    #             structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
-    #             dilated_target_voxels = cupyx.scipy.ndimage.binary_dilation(self.hash_grid, structure=structure)
-    #         else:
-    #             dilated_target_voxels = self.hash_grid
-    #         not_in_dilated_target_mask = ~(dilated_target_voxels[tx, ty, tz])
-    #         filtered_indices = just_added_indices[cp.asnumpy(not_in_dilated_target_mask)]
-    #         for idx in filtered_indices:
-    #             idx_tuple = tuple(idx)
-    #             if idx_tuple not in self.added_voxels:
-    #                 self.added_voxels.append(idx_tuple)
-    #                 new_voxels.append(idx_tuple)  # Only new in this callback
-    
-    #     # --- Efficient projection of new voxels onto hash grid ---
-    #     # For each new voxel, project downwards only until you hit the first hash_grid cell (obstacle)
-    #     projected_hash_voxels = set()
-    #     grid_shape = self.planner.grid_shape
-    #     for idx in new_voxels:
-    #         x, y, z = idx
-    #         for zz in range(z, -1, -1):
-    #             if self.hash_grid[x, y, zz]:
-    #                 projected_hash_voxels.add((x, y, zz))
-    #                 break  # Only project to the first hash_grid cell below
-    #     # Only analyze critical points on these projected_hash_voxels
-    
-    #     # === Find critical points among projected_hash_voxels ===
-    #     critical_points = []
-    #     added_voxels_set = set(self.added_voxels)
-    #     explored_voxels = set(map(tuple, cp.argwhere(self.scanned_voxels).get()))
-    #     unexplored_voxels = set(
-    #         (x, y, z)
-    #         for x, y, z in projected_hash_voxels
-    #         if (x, y, z) not in explored_voxels
-    #     )
-    #     neighbor_offsets = [
-    #         (1, 0, 0), (-1, 0, 0),
-    #         (0, 1, 0), (0, -1, 0),
-    #         (0, 0, 1), (0, 0, -1)
-    #     ]
-    #     for idx in projected_hash_voxels:
-    #         neighbor_added = 0
-    #         has_unexplored = False
-    #         has_explored = False
-    #         for dx, dy, dz in neighbor_offsets:
-    #             nidx = (idx[0] + dx, idx[1] + dy, idx[2] + dz)
-    #             if (0 <= nidx[0] < grid_shape[0] and
-    #                 0 <= nidx[1] < grid_shape[1] and
-    #                 0 <= nidx[2] < grid_shape[2]):
-    #                 if nidx in added_voxels_set:
-    #                     neighbor_added += 1
-    #                 if nidx in explored_voxels:
-    #                     has_explored = True
-    #                 if nidx in unexplored_voxels:
-    #                     has_unexplored = True
-    #         if neighbor_added <= 1 and has_unexplored and has_explored:
-    #             critical_points.append(idx)
-    
-    #     # === Publish critical points as PointCloud2 for visualization ===
-    #     if len(critical_points) > 0:
-    #         critical_points_xyz = (np.array(critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
-    #         header = std_msgs.msg.Header()
-    #         header.stamp = rospy.Time.now()
-    #         header.frame_id = "map"
-    #         critical_pc2 = pc2.create_cloud_xyz32(header, critical_points_xyz.astype(np.float32))
-    #         if not hasattr(self, 'critical_points_pub'):
-    #             self.critical_points_pub = rospy.Publisher("critical_points", PointCloud2, queue_size=10)
-    #         self.critical_points_pub.publish(critical_pc2)
-    
-    #     # Only update tomograph if there are new voxels
-    #     if len(new_voxels) > 0:
-    #         self.add_new_obstacles_to_tomograph(new_voxels)
-    
-    #     # --- Dilation control for scanned voxels ---
-    #     if self.use_dilation:
-    #         tolerance_voxels = self.dilation_size
-    #         structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
-    #         dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
-    #     else:
-    #         dilated_scanned_voxels = self.scanned_voxels
-    
-    #     scanned_target_voxels = dilated_scanned_voxels & self.target_voxels
-    #     remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
-    
-    #     rospy.loginfo(f"Scanned target voxels: {cp.sum(scanned_target_voxels).get()}")
-    #     rospy.loginfo(f"Remaining target voxels: {cp.sum(remaining_target_voxels).get()}")
-    #     rospy.loginfo(f"Critical points found: {len(critical_points)}")
-    
-    #     self.publish_scanned_voxels()
-    #     self.publish_added_voxels()
-    #     self.publish_remaining_target_voxels()
    
     def lidar_grid_callback(self, msg):
         indices = np.array(msg.data, dtype=np.int32).reshape(-1, 3)
@@ -640,30 +595,85 @@ class LidarMappingNode:
         scanned_target_voxels = dilated_scanned_voxels & self.target_voxels
         remaining_target_voxels = self.target_voxels & ~scanned_target_voxels
     
-        rospy.loginfo(f"Scanned target voxels: {cp.sum(scanned_target_voxels).get()}")
-        rospy.loginfo(f"Remaining target voxels: {cp.sum(remaining_target_voxels).get()}")
+        # rospy.loginfo(f"Scanned target voxels: {cp.sum(scanned_target_voxels).get()}")
+        # rospy.loginfo(f"Remaining target voxels: {cp.sum(remaining_target_voxels).get()}")
         self.publish_scanned_voxels()
         self.publish_remaining_target_voxels()
+
     def lidar_new_voxel_indices_callback(self, msg):
         indices = np.array(msg.data, dtype=np.int32).reshape(-1, 3)
         if indices.shape[0] == 0:
             return
-
+    
         # Add to self.added_voxels (avoid duplicates)
-        if not hasattr(self, 'added_voxels'):
-            self.added_voxels = []
+            
+        new_voxels = []
         for idx in indices:
             idx_tuple = tuple(idx)
             if idx_tuple not in self.added_voxels:
                 self.added_voxels.append(idx_tuple)
-        self.add_new_obstacles_to_tomograph(indices)
+                new_voxels.append(idx_tuple)
+        self.new_voxel_buffer.extend(new_voxels)
+    
+        # # --- Efficient projection of new voxels onto hash grid ---
+        # projected_hash_voxels = set()
+        # grid_shape = self.planner.grid_shape
+        # for idx in new_voxels:
+        #     x, y, z = idx
+        #     for zz in range(z, -1, -1):
+        #         if self.hash_grid[x, y, zz]:
+        #             if (x, y, zz) not in projected_hash_voxels:
+        #                 projected_hash_voxels.add((x, y, zz))
+        #             break  # Only project to the first hash_grid cell below
+    
+        # # === Find critical points among projected_hash_voxels ===
+        # critical_points = []
+        # added_voxels_set = set(self.added_voxels)
+        # explored_voxels = set(map(tuple, cp.argwhere(self.scanned_voxels).get()))
+        # unexplored_voxels = set(
+        #     (x, y, z)
+        #     for x, y, z in projected_hash_voxels
+        #     if (x, y, z) not in explored_voxels
+        # )
+        # neighbor_offsets = [
+        #     (1, 0, 0), (-1, 0, 0),
+        #     (0, 1, 0), (0, -1, 0),
+        #     (0, 0, 1), (0, 0, -1)
+        # ]
+        # for idx in projected_hash_voxels:
+        #     neighbor_added = 0
+        #     has_unexplored = False
+        #     has_explored = False
+        #     for dx, dy, dz in neighbor_offsets:
+        #         nidx = (idx[0] + dx, idx[1] + dy, idx[2] + dz)
+        #         if (0 <= nidx[0] < grid_shape[0] and
+        #             0 <= nidx[1] < grid_shape[1] and
+        #             0 <= nidx[2] < grid_shape[2]):
+        #             if nidx in added_voxels_set:
+        #                 neighbor_added += 1
+        #             if nidx in explored_voxels:
+        #                 has_explored = True
+        #             if nidx in unexplored_voxels:
+        #                 has_unexplored = True
+        #     if neighbor_added <= 1 and has_unexplored and has_explored:
+        #         critical_points.append(idx)
+    
+        # # === Publish critical points as PointCloud2 for visualization ===
+        # if len(critical_points) > 0:
+        #     critical_points_xyz = (np.array(critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
+        #     header = std_msgs.msg.Header()
+        #     header.stamp = rospy.Time.now()
+        #     header.frame_id = "map"
+        #     critical_pc2 = pc2.create_cloud_xyz32(header, critical_points_xyz.astype(np.float32))
+        #     self.critical_points_pub.publish(critical_pc2)
+    
+        # self.add_new_obstacles_to_tomograph(indices)
         self.publish_added_voxels()
-
         
 
     def follow_path(self):
         self.start_time = time.time()
-        rate = rospy.Rate(5)
+        rate = rospy.Rate(2)    # 10 Hz
         while not rospy.is_shutdown():
             self.step()
             rate.sleep()
