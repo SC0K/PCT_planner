@@ -387,50 +387,39 @@ class TomogramCoveragePlanner(object):
         traj_3d = np.array([self.idx2pos_3D(idx) for idx in path]) + np.array([0,0, 0.5])  # Add a small offset to z for visualization
         return traj_3d
     
-    def online_local_replan(self, start_pos, target_pos, max_radius=10, step=1, num_angles=16, height_tol=0.2):
+    def online_local_replan(self, start_pos, target_pos, height_tol=1.0):
         """
         Given a target position in world coordinates, find the closest traversable grid cell
-        around the target (in a circle), and plan a path from start_pos to it.
-    
-        Args:
-            start_pos (np.ndarray): (x, y, z) in world coordinates (robot's current position).
-            target_pos (np.ndarray): (x, y, z) in world coordinates (desired target).
-            max_radius (int): Maximum search radius in grid cells.
-            step (int): Step size in grid cells.
-            num_angles (int): Number of angles to sample per radius.
-            height_tol (float): Allowed height difference (meters) for the same layer.
-    
-        Returns:
-            np.ndarray or None: Planned trajectory from start_pos to reachable goal, or None if not found.
+        along the line from start_pos to target_pos, and plan a path from start_pos to it.
         """
         # Convert to grid idx (s, x, y)
-        idx = self.pos2idx_3D_plan(target_pos)
-        s, x, y = np.round(idx).astype(int)
+        start_idx = np.round(self.pos2idx_3D_plan(start_pos)).astype(int)
+        goal_idx = np.round(self.pos2idx_3D_plan(target_pos)).astype(int)
+        if abs(goal_idx[1] - start_idx[1])+abs(goal_idx[2]-start_idx[2]) < 3:
+            rospy.logwarn("Target position is too close to the start position, skipping replan.")
+            return np.array([start_pos,target_pos])
         grid_shape = self.trav.shape
         target_height = target_pos[2]
     
+        # Generate points along the line from start_idx to goal_idx
+        num_points = int(np.linalg.norm(goal_idx - start_idx)) + 1
+        line_points = np.linspace( goal_idx,start_idx, num_points).astype(int)
+    
         reachable_goal = None
-        # Search in increasing radius
-        for r in range(0, max_radius + 1, step):
-            for theta in np.linspace(0, 2 * np.pi, num_angles, endpoint=False):
-                dx = int(round(r * np.cos(theta)))
-                dy = int(round(r * np.sin(theta)))
-                xx, yy = x + dx, y + dy
-                # Check bounds
-                if 0 <= s < grid_shape[0] and 0 <= xx < grid_shape[1] and 0 <= yy < grid_shape[2]:
-                    elev = self.elev_g[s, xx, yy]
-                    # Check traversability and height similarity
-                    if self.trav[s, xx, yy] < 20 and elev > -90 and abs(elev - target_height) < height_tol:
-                        # Convert back to world coordinates
-                        candidate_idx = np.array([s,yy, xx])
-                        reachable_goal = self.idx2pos_3D(candidate_idx)
-                        break
-            if reachable_goal is not None:
-                break
+        for idx in line_points:
+            s, x, y = idx
+            if 0 <= s < grid_shape[0] and 0 <= x < grid_shape[1] and 0 <= y < grid_shape[2]:
+                elev = self.elev_g[s, x, y]
+                if self.trav[s, x, y] < 20 and elev > -90 and abs(elev - target_height) < height_tol:
+                    candidate_idx = np.array([s, y, x])  # Note: swap x/y if needed by your convention
+                    reachable_goal = self.idx2pos_3D(candidate_idx)
+                    break
     
         if reachable_goal is not None:
-            # Plan a path from start_pos to reachable_goal
-            planned_traj = self.plan_online(start_pos, reachable_goal)
+            if np.linalg.norm(reachable_goal+np.array([0,0,0.5]) - start_pos) < 0.3:
+                rospy.logwarn("Reachable goal position is too close to the start position, skipping replan.")
+                return np.array([start_pos, reachable_goal])
+            planned_traj = self.plan_online(start_pos, reachable_goal+np.array([0,0,0.5]))
             return planned_traj
         else:
             return None
@@ -456,6 +445,10 @@ class TomogramCoveragePlanner(object):
         # Calculate x and y indices
         idx_xy = np.round(pos_xy / self.resolution).astype(np.int32) + self.offset
         idx_xy = np.array([idx_xy[1], idx_xy[0]], dtype=np.int32)  # Swap x and y for grid indexing
+        idx_xy = np.round((np.array(pos[:2]) / self.voxel_size) - self.min_idx[:2]).astype(int)
+        # Clip indices to valid range
+        idx_xy[0] = np.clip(idx_xy[0], 0, self.elev_g.shape[2] - 1)
+        idx_xy[1] = np.clip(idx_xy[1], 0, self.elev_g.shape[1] - 1)
     
         # Search for the z index (layer number) as the maximum s where elev_g[s, idx_xy[1], idx_xy[0]] <= z_height
         z_height = pos[2]  # Extract the z-coordinate
@@ -737,7 +730,7 @@ class TomogramCoveragePlanner(object):
         import cupyx.scipy.ndimage as cp_ndimage
     
         explored_voxels_max = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
-        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.6])  # Adjust for z-axis
+        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])  # Adjust for z-axis
         explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
         for i, candidate_pose in enumerate(candidate_points_xyz):
             # Perform raycasting for the current pose
@@ -765,14 +758,10 @@ class TomogramCoveragePlanner(object):
     
         # --- Dilation to fill FOV gaps (same as nextBestView) ---
         if use_dilation:
-            struct = cp.ones((3, 3, 1), dtype=cp.bool_)  # x×y×z
+            struct = cp.ones((2, 2, 1), dtype=cp.bool_)  # x×y×z
             explored_voxels_max = cp_ndimage.binary_dilation(explored_voxels_max, structure=struct)
             explored_voxels_max = cp_ndimage.binary_dilation(explored_voxels_max, structure=struct)
             explored_voxels_max = cp.logical_and(explored_voxels_max, self.hash_grid)
-            for i in range(explored_voxels_candidate.shape[0]):
-                explored_voxels_candidate[i] = cp_ndimage.binary_dilation(explored_voxels_candidate[i], structure=struct)
-                explored_voxels_candidate[i] = cp_ndimage.binary_dilation(explored_voxels_candidate[i], structure=struct)
-                explored_voxels_candidate[i] = cp.logical_and(explored_voxels_candidate[i], self.hash_grid)
     
         return explored_voxels_max, explored_voxels_candidate
 
@@ -861,7 +850,7 @@ class TomogramCoveragePlanner(object):
 
         n = len(candidate_poses)
         az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
-        el = cp.linspace(-45, 4, n_rays)
+        el = cp.linspace(-45, 3, n_rays)
         az_grid, el_grid = cp.meshgrid(az, el)
         az_flat = cp.radians(az_grid.flatten())
         el_flat = cp.radians(el_grid.flatten())
@@ -937,7 +926,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
                                  fov_deg_ver=90, fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
     # Compute azimuth and elevation angles
     az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
-    el = cp.linspace(-45, 4, n_rays)
+    el = cp.linspace(-45, 3, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())

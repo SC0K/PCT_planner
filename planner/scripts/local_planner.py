@@ -8,7 +8,7 @@ from planner_wrapper_coveragev2 import TomogramCoveragePlanner
 from config import Config
 import tf
 from nav_msgs.msg import Path
-from geometry_msgs.msg import PoseStamped, Quaternion, Point
+from geometry_msgs.msg import PoseStamped, Quaternion, Point, PointStamped
 import std_msgs.msg
 import math
 import tf.transformations as tf_trans
@@ -46,6 +46,7 @@ class LidarMappingNode:
     STATE_FOLLOW_PATH = 0
     STATE_COVERAGE = 1
     STATE_RECOVERY = 2
+    STATE_CRITICAL_POINT = 3
 
     def __init__(self, planner):
         self.planner = planner
@@ -60,7 +61,7 @@ class LidarMappingNode:
         self.added_voxels_projected_set = set()
         self.use_dilation = False
 
-        self.process_voxel_timer = rospy.Timer(rospy.Duration(0.5), self.find_critical_points)
+        self.process_voxel_timer = rospy.Timer(rospy.Duration(1), self.find_critical_points)
 
         candidate_points_xyz = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points.npy")
         candidate_points_angles = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_angles.npy")
@@ -90,6 +91,8 @@ class LidarMappingNode:
         self.remaining_target_voxels_pc_pub = rospy.Publisher("remaining_target_voxels_pc", PointCloud2, queue_size=10)
         self.replanned_path_pub = rospy.Publisher("/replanned_coverage_path", Path, queue_size=10)
         self.global_path_pub = rospy.Publisher("/global_path", Path, queue_size=10)
+
+        self.unscanned_center_pub = rospy.Publisher("/unscanned_center", PointStamped, queue_size=1)
         
 
         rospy.Subscriber("/anymal/pose_in_sim_world", Odometry, self.robot_pose_callback)
@@ -186,12 +189,138 @@ class LidarMappingNode:
         return True
 
     def step(self):
+        rospy.loginfo("Current state: %s", self.state)
+        rospy.loginfo("Number of critical points: %d", len(self.critical_points))
+        if self.critical_points or self.state == self.STATE_CRITICAL_POINT:
+            self.state = self.STATE_CRITICAL_POINT
+            rospy.loginfo("######### going to handle critical points #########")
+            self.handle_critical_points()
         if self.state == self.STATE_FOLLOW_PATH:
             self.handle_follow_path()
         elif self.state == self.STATE_COVERAGE:
             self.handle_coverage()
         elif self.state == self.STATE_RECOVERY:
             self.handle_recovery()
+    def handle_critical_points(self):
+        if self.critical_points:
+            critical_points_xyz = (np.array(self.critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
+        else:
+            self.state = self.STATE_FOLLOW_PATH
+            return
+    
+        robot_pos = np.array(self.robot_position)
+        # Find the closest critical point
+        dists = np.linalg.norm(critical_points_xyz - robot_pos, axis=1)
+        idx = np.argmin(dists)
+        target_cp = critical_points_xyz[idx]
+    
+        # Publish the critical point as the goal (use robot's current z for safety)
+        goal_msg = PoseStamped()
+        goal_msg.header.stamp = rospy.Time.now()
+        goal_msg.header.frame_id = "map"
+        goal_msg.pose.position.x = target_cp[0]
+        goal_msg.pose.position.y = target_cp[1]
+        goal_msg.pose.position.z = robot_pos[2]
+        # Optionally, face the critical point
+        direction = target_cp[:2] - robot_pos[:2]
+        yaw = math.atan2(direction[1], direction[0])
+        orientation = tf_trans.quaternion_from_euler(0, 0, yaw)
+        goal_msg.pose.orientation = Quaternion(*orientation)
+        self.goal_pub.publish(goal_msg)
+    
+        # --- Select local patch of projected added voxels around the critical point ---
+        cp_idx = self.critical_points[idx]
+        patch_radius_vox = 2/ self.planner.voxel_size  # search radius in voxels
+        patch_voxels = []
+        for v in self.added_voxels_projected_set:
+            if abs(v[0] - cp_idx[0]) <= patch_radius_vox and abs(v[1] - cp_idx[1]) <= patch_radius_vox and abs(v[2] - cp_idx[2]) <= 1:
+                patch_voxels.append(v)
+        if len(patch_voxels) < 3:
+            # Fallback: just use the critical point itself
+            patch_coords = np.array([target_cp[:2]])
+        else:
+            patch_coords = (np.array(patch_voxels)[:, :2] + self.planner.min_idx[:2] + 0.5) * self.planner.voxel_size
+
+        # --- Fit ellipse (PCA) in xy-plane ---
+        center = target_cp[:2]
+        centered = patch_coords - center
+        cov = np.cov(centered, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        major_axis = eigvecs[:, np.argmax(eigvals)]
+        minor_axis = eigvecs[:, np.argmin(eigvals)]
+        r_major = max(np.sqrt(eigvals.max()), 1.5)  # at least 1m from center
+        r_minor = max(np.sqrt(eigvals.min()), 1.5)  # at least 1m from center
+        
+        # --- Circling the centroid: select viewpoints around the ellipse ---
+        if not hasattr(self, 'ellipse_view_idx'):
+            self.ellipse_view_idx = 0
+        
+        num_views = 100  # e.g., 15 degrees per step
+        theta = 2 * np.pi * self.ellipse_view_idx / num_views
+        theta2 = -theta 
+        view_dir = np.array([np.cos(theta), np.sin(theta)])
+        view_dir2 = np.array([np.cos(theta2), np.sin(theta2)])
+        viewpoint_xy = center + r_major * view_dir[0] * major_axis + r_minor * view_dir[1] * minor_axis
+        viewpoint_xy2 = center + r_major * view_dir2[0] * major_axis + r_minor * view_dir2[1] * minor_axis
+        if np.linalg.norm(viewpoint_xy - patch_coords) < np.linalg.norm(viewpoint_xy2 - patch_coords):
+            viewpoint_xy_final = viewpoint_xy2
+        else:
+            viewpoint_xy_final = viewpoint_xy
+        viewpoint = np.array([viewpoint_xy_final[0], viewpoint_xy_final[1], robot_pos[2]])
+        
+        # Publish as goal, facing the critical point
+        goal_msg = PoseStamped()
+        goal_msg.header.stamp = rospy.Time.now()
+        goal_msg.header.frame_id = "map"
+        goal_msg.pose.position.x = viewpoint[0]
+        goal_msg.pose.position.y = viewpoint[1]
+        goal_msg.pose.position.z = viewpoint[2]
+        direction = target_cp[:2] - viewpoint_xy_final
+        yaw = math.atan2(direction[1], direction[0])
+        orientation = tf_trans.quaternion_from_euler(0, 0, yaw)
+        goal_msg.pose.orientation = Quaternion(*orientation)
+        self.goal_pub.publish(goal_msg)
+        
+        # After reaching the viewpoint, increment the index for the next call
+        if np.linalg.norm(robot_pos[:2] - viewpoint_xy_final) < 0.5:
+            self.ellipse_view_idx = (self.ellipse_view_idx + 1) % num_views
+        
+        # --- Visualize the ellipse in RViz ---
+        ellipse_marker = Marker()
+        ellipse_marker.header.frame_id = "map"
+        ellipse_marker.header.stamp = rospy.Time.now()
+        ellipse_marker.ns = "critical_point_ellipse"
+        ellipse_marker.id = 0
+        ellipse_marker.type = Marker.LINE_STRIP
+        ellipse_marker.action = Marker.ADD
+        ellipse_marker.scale.x = 0.05  # line width
+        ellipse_marker.color.r = 1.0
+        ellipse_marker.color.g = 0.5
+        ellipse_marker.color.b = 0.0
+        ellipse_marker.color.a = 1.0
+        
+        # Generate ellipse points in xy-plane
+        num_points = 40
+        theta = np.linspace(0, 2 * np.pi, num_points)
+        ellipse_points = []
+        for t in theta:
+            pt = center + r_major * np.cos(t) * major_axis + r_minor * np.sin(t) * minor_axis
+            p = Point()
+            p.x = pt[0]
+            p.y = pt[1]
+            p.z = robot_pos[2]
+            ellipse_points.append(p)
+        ellipse_marker.points = ellipse_points
+        
+        # Publish the marker
+        if not hasattr(self, 'ellipse_pub'):
+            self.ellipse_pub = rospy.Publisher("/critical_point_ellipse", Marker, queue_size=1)
+        self.ellipse_pub.publish(ellipse_marker)
+
+        if not self.critical_points:
+            self.state = self.STATE_FOLLOW_PATH
+            return
+        
 
     def handle_follow_path(self):
         if self.current_waypoint_idx >= len(self.global_path):
@@ -271,6 +400,7 @@ class LidarMappingNode:
         # --- Process new voxels in buffer ---
         if self.new_voxel_buffer:
             unique_voxels = self.new_voxel_buffer
+            self.added_voxels.extend(unique_voxels)
             self.new_voxel_buffer = []
 
             projected_hash_voxels_buffer = set()
@@ -335,6 +465,7 @@ class LidarMappingNode:
             ## Only update tomograph if there are new voxels
             if len(unique_voxels) > 0:
                 self.add_new_obstacles_to_tomograph(unique_voxels)
+                self.publishTomogram(self.planner.elev_g, self.planner.trav)
     def prune_invalid_critical_points(self):
         """
         Remove critical points that are no longer valid.
@@ -422,17 +553,51 @@ class LidarMappingNode:
             return
     
         # Compute the unscanned center and shift as in handle_follow_path
-        unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-        shift_distance = 1
-        angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
-        rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, angle))[:3, :3]
-        shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])
-        unscanned_center += shift_vector
+        unscanned_center_raw = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
+        # Compute the normal direction of the unscanned patch
+        unscanned_points = unscanned_indices * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
+        centroid = np.mean(unscanned_points, axis=0)
+        centered = unscanned_points - centroid
+        cov = np.cov(centered, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        normal = eigvecs[:, np.argmin(eigvals)]  # Normal vector (least variance)
+        
+        shift_distance = 1.5 
+        
+        # ... after computing normal_xy as before ...
+        if abs(normal[2]) > 0.7:
+            # Ground/ceiling: use original candidate angle
+            angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
+            shift_vector = np.array([math.cos(angle), math.sin(angle), 0]) * -shift_distance
+        else:
+            # Wall: choose normal_xy direction closest to -candidate angle
+            angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
+            candidate_dir = np.array([math.cos(angle), math.sin(angle), 0])
+            normal_xy = normal.copy()
+            normal_xy[2] = 0
+            if np.linalg.norm(normal_xy) > 1e-3:
+                normal_xy /= np.linalg.norm(normal_xy)
+            else:
+                normal_xy = np.array([1, 0, 0])  # fallback
+        
+            # Compare normal_xy and -candidate_dir, flip if needed
+            if np.dot(normal_xy, -candidate_dir) < 0:
+                normal_xy = -normal_xy
+            shift_vector = normal_xy * shift_distance
+        
+        unscanned_center = unscanned_center_raw + shift_vector
         robot_pos = np.array(self.robot_position)
         unscanned_center[2] = robot_pos[2]  # Keep the same height as the robot
+        unscanned_center_msg = PointStamped()
+        unscanned_center_msg.header.stamp = rospy.Time.now()
+        unscanned_center_msg.header.frame_id = "map"
+        unscanned_center_msg.point.x = unscanned_center[0]
+        unscanned_center_msg.point.y = unscanned_center[1]
+        unscanned_center_msg.point.z = unscanned_center[2]
+        self.unscanned_center_pub.publish(unscanned_center_msg)
         
         # Use online_local_replan to find a traversable goal and plan a path
-        planned_traj = self.planner.online_local_replan(robot_pos, unscanned_center, max_radius=10, step=1, num_angles=16, height_tol=1.5)
+        planned_traj = self.planner.online_local_replan(robot_pos, unscanned_center, height_tol=1.5)
         if planned_traj is None or len(planned_traj) < 2:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
             self.state = self.STATE_FOLLOW_PATH
@@ -468,13 +633,13 @@ class LidarMappingNode:
             return
     
         # Otherwise, send the next point as goal, always facing the unscanned center
-        if closest_idx + 1 < len(planned_traj):
-            next_goal = planned_traj[closest_idx + 1]
+        if closest_idx + 3 < len(planned_traj):
+            next_goal = planned_traj[closest_idx + 3]
         else:
             next_goal = planned_traj[-1]
     
         # Orientation: always face the center of the unscanned area
-        direction = np.array(unscanned_center[:2]) - np.array(next_goal[:2])
+        direction = np.array(unscanned_center_raw[:2]) - np.array(next_goal[:2])
         yaw = math.atan2(direction[1], direction[0])
         orientation = tf_trans.quaternion_from_euler(0, 0, yaw)
         orientation = Quaternion(*orientation)
@@ -504,24 +669,6 @@ class LidarMappingNode:
         self.planner.add_obstacle_points(world_points)
     
         rospy.loginfo(f"Added {len(world_points)} new obstacle points to tomograph.")
-    
-        # # --- Dynamic replanning between candidate points using segment_path ---
-        # if self.candidate_points_idx < len(self.candidate_points_idx) - 1:
-        #     start = self.candidate_points_idx[self.next_candidate_xyz_idx]
-        #     goal = self.candidate_points_idx[self.next_candidate_xyz_idx+1]
-        #     replanned_path = self.planner.plan_with_idx(start, goal)
-        #     if replanned_path is not None and len(replanned_path) > 1:
-        #         # Use the corresponding segment from self.segment_path for comparison
-        #         segment = self.segment_path[self.next_candidate_xyz_idx]
-        #         min_len = min(len(segment), len(replanned_path))
-        #         diff = np.linalg.norm(segment[:min_len] - replanned_path[:min_len], axis=1).mean()
-        #         # Threshold for "too different"
-        #         if diff > 0.5:
-        #             rospy.loginfo("Replanned path differs significantly from original segment. Updating segment_path and global_path.")
-        #             # Update segment_path
-        #             self.segment_path[self.next_candidate_xyz_idx] = replanned_path
-        #             # Recompute global_path by concatenating all segments
-        #             self.global_path = np.concatenate(self.segment_path, axis=0)
         return True
         
     def publishTomogram(self, elev_g, trav):
@@ -689,7 +836,7 @@ class LidarMappingNode:
         for idx in indices:
             idx_tuple = tuple(idx)
             if idx_tuple not in self.added_voxels:
-                self.added_voxels.append(idx_tuple)
+                # #########")
                 new_voxels.append(idx_tuple)
         self.new_voxel_buffer.extend(new_voxels)
     
@@ -755,7 +902,6 @@ class LidarMappingNode:
             self.publish_scanned_voxels()
             self.publish_remaining_target_voxels()
             self.publish_added_voxels()
-            self.publishTomogram(self.planner.elev_g, self.planner.trav)
             self.publish_global_path()
 
             self.step()
@@ -766,7 +912,7 @@ if __name__ == "__main__":
     cfg = Config()
     planner = TomogramCoveragePlanner(cfg)
     planner.loadTomogram("experiments/2F_2*1")
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1)
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1075)
     node = LidarMappingNode(planner)
     node.follow_path()
     rospy.spin()
