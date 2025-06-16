@@ -60,22 +60,31 @@ class LidarMappingNode:
         self.critical_points = []
         self.added_voxels_projected_set = set()
         self.use_dilation = False
+        self.tomo_update_flag = False
+        self.replanning = False
 
         self.process_voxel_timer = rospy.Timer(rospy.Duration(1), self.find_critical_points)
+        self.update_global_path_timer = rospy.Timer(rospy.Duration(3), self.replan_global_path)
 
         candidate_points_xyz = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points.npy")
         candidate_points_angles = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_angles.npy")
         candidate_points_idx = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_idx.npy")
         self.candidate_path_idx = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/shortest_path_idx.npy")
         self.global_path = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/full_trajectory.npy")
-        self.segment_path = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/segment_trajectory.npy", allow_pickle=True)
+        self.segment_path = np.load(
+            "/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/segment_trajectory.npy",
+            allow_pickle=True
+        )
+        if isinstance(self.segment_path, np.ndarray) and self.segment_path.dtype == object and self.segment_path.shape == ():
+            self.segment_path = self.segment_path.item()
         self.candidate_points_xyz = np.zeros_like(candidate_points_xyz)
         self.candidate_points_angles = np.zeros_like(candidate_points_angles)
+        self.candidate_points_idx = np.zeros_like(candidate_points_idx, dtype=np.int32)
         self.hash_grid = self.planner.hash_grid
         for i, idx in enumerate(self.candidate_path_idx):
             self.candidate_points_xyz[i] = candidate_points_xyz[idx] + np.array([0,0,0.5])
             self.candidate_points_angles[i] = candidate_points_angles[idx]    
-            self.candidate_points_idx = candidate_points_idx[idx]
+            self.candidate_points_idx[i] = candidate_points_idx[idx]
         
         self.next_candidate_xyz_idx = 0
         self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, self.candidate_points_angles)
@@ -398,6 +407,9 @@ class LidarMappingNode:
                             return
     def find_critical_points(self,event):
         # --- Process new voxels in buffer ---
+        if self.replanning:
+            rospy.loginfo("Replanning in progress, skipping critical point processing.")
+            return
         if self.new_voxel_buffer:
             unique_voxels = self.new_voxel_buffer
             self.added_voxels.extend(unique_voxels)
@@ -597,6 +609,11 @@ class LidarMappingNode:
         self.unscanned_center_pub.publish(unscanned_center_msg)
         
         # Use online_local_replan to find a traversable goal and plan a path
+        # robot_pos = np.array([self.robot_position[1], self.robot_position[0], self.robot_position[2]])
+        # Wait until replanning is finished
+        while self.replanning:
+            rospy.loginfo("Waiting for replanning to finish...")
+            rospy.sleep(0.1)  # Sleep for 100ms
         planned_traj = self.planner.online_local_replan(robot_pos, unscanned_center, height_tol=1.5)
         if planned_traj is None or len(planned_traj) < 2:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
@@ -669,8 +686,49 @@ class LidarMappingNode:
         self.planner.add_obstacle_points(world_points)
     
         rospy.loginfo(f"Added {len(world_points)} new obstacle points to tomograph.")
+        self.tomo_update_flag = True
         return True
-        
+    def replan_global_path(self, event):
+        if self.next_candidate_xyz_idx < len(self.candidate_points_xyz) - 1 and self.tomo_update_flag:
+            rospy.loginfo("replan_global_path timer fired")
+            self.replanning = True
+            # Use candidate_points_xyz for candidate positions
+            remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
+            full_trajectory = []
+            segment_trajectories = {}
+    
+            for i in range(len(remaining_candidates) - 1):
+                start_pos = remaining_candidates[i]
+                end_pos = remaining_candidates[i + 1]
+            
+                traj_3d = self.planner.plan_with_idx_online(start_pos, end_pos)
+                if traj_3d is not None:
+                    full_trajectory.extend(traj_3d)
+                    segment_trajectories[(i, i+1)] = np.array(traj_3d)
+                else:
+                    rospy.logwarn(f"Failed to compute trajectory between {start_pos} and {end_pos}, searching along segment path...")
+                    # Use segment_path to reduce computation
+                    segment = self.segment_path[(i+1,i+2)]  # segment is a dense array of points
+                    stride = 10  # check every 10th point
+                    
+                    found = False
+                    for idx in range(0, len(segment), stride):
+                        pt = segment[idx]
+                        pt_idx = self.planner.pos2idx_3D_plan(pt)
+                        cost = self.planner.trav[pt_idx[0], pt_idx[2], pt_idx[1]]
+                        rospy.logwarn(f"Checking sparse point {pt} with idx {pt_idx} and cost {cost:.2f}")
+                        if cost < 20:
+                            traj_3d_future = self.planner.plan_with_idx_online(start_pos, pt_idx)
+                            if traj_3d_future is not None:
+                                full_trajectory.extend(traj_3d_future)
+                                segment_trajectories[(i, f"segment_{pt}")] = np.array(traj_3d_future)
+                                found = True
+                                break
+                    if not found:
+                        rospy.logwarn(f"No traversable path found from candidate {i} to any sparse point in segment.")
+            self.replanning = False
+            self.global_path = np.array(full_trajectory)
+            self.tomo_update_flag = False
     def publishTomogram(self, elev_g, trav):
         header = Header()
         header.seq = 0

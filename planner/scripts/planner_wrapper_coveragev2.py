@@ -340,6 +340,17 @@ class TomogramCoveragePlanner(object):
         traj_3d = transTrajGrid2Map(self.map_dim, self.center, self.resolution, traj_3d)
 
         return traj_3d
+    def plan_with_idx_online(self, start_pos, end_pos):
+        start_pos = np.array([start_pos[0], start_pos[2], start_pos[1]], dtype=np.int32)   # planner needs s,y,x whereas the grid index is s,x,y
+        end_pos = np.array([end_pos[0], end_pos[2], end_pos[1]], dtype=np.int32)
+        self.planner.plan(start_pos, end_pos, False)
+        path_finder: a_star.Astar = self.planner.get_path_finder()
+        path = path_finder.get_result_matrix()   
+        if len(path) == 0:
+            rospy.logerr("No path found between start and end positions.")
+            return None
+        traj_3d = np.array([self.idx2pos_3D(idx) for idx in path]) + np.array([0,0, 0.5])  # Add a small offset to z for visualization
+        return traj_3d
     
     def plan(self, start_pos, end_pos):
         self.start_idx[:] = self.pos2idx_3D_plan(start_pos)
@@ -460,7 +471,7 @@ class TomogramCoveragePlanner(object):
                 break
     
         # Combine z_idx with x and y indices
-        idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.float32)
+        idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.int32)
         return idx
     def pos2idx_3D(self, pos):
         """
