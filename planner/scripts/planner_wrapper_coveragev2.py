@@ -11,13 +11,81 @@ import sklearn.cluster
 import time
 import cupyx.scipy.ndimage as cp_ndimage
 import rospy
+import reward_cpp
 
 
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
 
 rsg_root = os.path.dirname(os.path.abspath(__file__)) + '/../..'
+ray_prep_kernel_code = r'''
+extern "C" __global__
+void ray_prep_kernel(
+    const double* poses,         // (n, 3)
+    const double* yaws,          // (n,)
+    int n_poses,
+    int n_rays,
+    int n_steps,
+    double fov_deg,
+    double el_min_deg,
+    double el_max_deg,
+    double max_range,
+    double resolution,
+    double voxel_size,
+    const int* min_idx,          // (3,)
+    const int* grid_shape,       // (3,)
+    int* idxs_out,               // (n, n_rays*n_rays, n_steps, 3)
+    bool* valid_out              // (n, n_rays*n_rays, n_steps)
+) {
+    int pose_idx = blockIdx.x;
+    int ray_idx = threadIdx.x;
+    if (pose_idx >= n_poses || ray_idx >= n_rays * n_rays) return;
 
+    int az_i = ray_idx / n_rays;
+    int el_i = ray_idx % n_rays;
+    double az = (-fov_deg/2.0) + az_i * (fov_deg/(n_rays-1));
+    double el = el_min_deg + el_i * ((el_max_deg-el_min_deg)/(n_rays-1));
+    double az_rad = az * 0.017453292519943295;
+    double el_rad = el * 0.017453292519943295;
+
+    // Direction in camera frame
+    double dx = cos(el_rad) * cos(az_rad);
+    double dy = cos(el_rad) * sin(az_rad);
+    double dz = sin(el_rad);
+
+    // Apply yaw rotation (Z axis)
+    double yaw = yaws[pose_idx] * 0.017453292519943295;
+    double c = cos(yaw), s = sin(yaw);
+    double dir_x = c*dx - s*dy;
+    double dir_y = s*dx + c*dy;
+    double dir_z = dz;
+
+    // Camera position (shifted)
+    const double* cam = poses + pose_idx*3;
+
+    for (int s = 0; s < n_steps; ++s) {
+        double dist = s * resolution;
+        double px = cam[0] + dir_x * dist;
+        double py = cam[1] + dir_y * dist;
+        double pz = cam[2] + dir_z * dist;
+
+        int ix = int(floor(px / voxel_size)) - min_idx[0];
+        int iy = int(floor(py / voxel_size)) - min_idx[1];
+        int iz = int(floor(pz / voxel_size)) - min_idx[2];
+
+        int out_idx = (((pose_idx * n_rays * n_rays + ray_idx) * n_steps) + s) * 3;
+        idxs_out[out_idx + 0] = ix;
+        idxs_out[out_idx + 1] = iy;
+        idxs_out[out_idx + 2] = iz;
+
+        bool valid = (ix >= 0 && ix < grid_shape[0] &&
+                      iy >= 0 && iy < grid_shape[1] &&
+                      iz >= 0 && iz < grid_shape[2]);
+        valid_out[(pose_idx * n_rays * n_rays + ray_idx) * n_steps + s] = valid;
+    }
+}
+'''
+ray_prep_kernel = cp.RawKernel(ray_prep_kernel_code, "ray_prep_kernel")
 ray_hit_kernel_code = r'''
 extern "C" __global__
 void ray_first_hit(const int* idxs, const bool* valid, const bool* hash,
@@ -52,6 +120,30 @@ void ray_first_hit(const int* idxs, const bool* valid, const bool* hash,
     }
 }
 '''
+reward_kernel_code = r'''
+extern "C" __global__
+void reward_count(const int* visible_hits, const int* hit_flags, const bool* explored,
+                  const int* min_idx, int n_candidates, int n_hits_per_candidate, int* rewards) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i >= n_candidates) return;
+
+    int reward = 0;
+    for (int j = 0; j < n_hits_per_candidate; ++j) {
+        int idx = i * n_hits_per_candidate + j;
+        if (hit_flags[idx]) {
+            int x = visible_hits[idx * 3 + 0] - min_idx[0];
+            int y = visible_hits[idx * 3 + 1] - min_idx[1];
+            int z = visible_hits[idx * 3 + 2] - min_idx[2];
+            // Bounds check
+            if (x >= 0 && y >= 0 && z >= 0) {
+                reward += !explored[x * (gridDim.y * gridDim.z) + y * gridDim.z + z];
+            }
+        }
+    }
+    rewards[i] = reward;
+}
+'''
+reward_count_kernel = cp.RawKernel(reward_kernel_code, "reward_count")
 ray_first_hit_kernel = cp.RawKernel(ray_hit_kernel_code, "ray_first_hit")
 
 
@@ -841,18 +933,11 @@ class TomogramCoveragePlanner(object):
         o3d.visualization.draw_geometries([vis_pcd], window_name="Explored Voxel Map")
     
         return explored_voxels
-
+    
     def batched_ray_reward(self, candidate_poses, orientations_deg):
         """
         Compute the number of new (unexplored) voxels seen from each candidate pose and orientation.
-
-        Args:
-            candidate_poses (np.ndarray): Shape (N, 3), world coordinates.
-            orientations_deg (list[int]): Length N, yaw angles in degrees.
-
-        Returns:
-            rewards (List[int]): New voxel counts for each pose.
-            visible_voxels_list (List[Set[Tuple[int]]]): Visible voxels per pose.
+        Uses a custom CUDA kernel for ray prep.
         """
         fov_deg = self.sensor_fov
         max_range = self.sensor_range
@@ -860,45 +945,54 @@ class TomogramCoveragePlanner(object):
         n_rays = 10
 
         n = len(candidate_poses)
-        az = cp.linspace(-fov_deg / 2, fov_deg / 2, n_rays)
-        el = cp.linspace(-45, 3, n_rays)
-        az_grid, el_grid = cp.meshgrid(az, el)
-        az_flat = cp.radians(az_grid.flatten())
-        el_flat = cp.radians(el_grid.flatten())
-        dirs_base = cp.stack([
-            cp.cos(el_flat) * cp.cos(az_flat),
-            cp.cos(el_flat) * cp.sin(az_flat),
-            cp.sin(el_flat)
-        ], axis=1)
+        n_steps = int(max_range / resolution)
+        # t0 = time.time()
 
-        dirs_all = []
-        for yaw_deg in orientations_deg:
-            yaw = np.radians(yaw_deg)
-            rot = np.array([
-                [np.cos(yaw), -np.sin(yaw), 0],
-                [np.sin(yaw),  np.cos(yaw), 0],
-                [0, 0, 1]
-            ])
-            dirs_all.append(dirs_base @ cp.asarray(rot.T))
-        dirs_all = cp.stack(dirs_all)
+        # Prepare input arrays
+        poses_gpu = cp.asarray(candidate_poses, dtype=cp.float64)
+        yaws_gpu = cp.asarray(np.array(orientations_deg, dtype=np.float64))
+        min_idx_gpu = cp.asarray(self.min_idx, dtype=cp.int32)
+        grid_shape_gpu = cp.asarray(self.grid_shape, dtype=cp.int32)
 
-        dists = cp.arange(0, max_range-3*resolution, resolution)
-        cam_shifted = cp.asarray(candidate_poses) - cp.asarray(self.min_idx) * self.voxel_size
-        rays = dirs_all[:, :, cp.newaxis, :] * dists[None, :, None] + cam_shifted[:, None, None, :]
+        # Prepare output arrays
+        idxs_out = cp.zeros((n, n_rays * n_rays, n_steps, 3), dtype=cp.int32)
+        valid_out = cp.zeros((n, n_rays * n_rays, n_steps), dtype=cp.bool_)
 
-        idxs = cp.floor(rays / self.voxel_size).astype(cp.int32)
-        valid = cp.all((idxs >= 0) & (idxs < cp.asarray(self.grid_shape)), axis=-1)
+        # Launch the ray prep kernel
+        ray_prep_kernel(
+            (n,), (n_rays * n_rays,),
+            (
+                poses_gpu,
+                yaws_gpu,
+                np.int32(n),
+                np.int32(n_rays),
+                np.int32(n_steps),
+                np.float64(fov_deg),
+                np.float64(-45),  # el_min_deg
+                np.float64(3),    # el_max_deg
+                np.float64(max_range),
+                np.float64(resolution),
+                np.float64(self.voxel_size),
+                min_idx_gpu,
+                grid_shape_gpu,
+                idxs_out,
+                valid_out
+            )
+        )
+        cp.cuda.Device().synchronize()
+        # t1 = time.time()
 
-        n_total_rays = idxs.shape[0] * idxs.shape[1]
-        n_steps = idxs.shape[2]
-
-        idxs_flat = idxs.reshape(-1, 3).ravel()
-        valid_flat = valid.ravel()
+        # Flatten for raycast kernel
+        idxs_flat = idxs_out.reshape(-1, 3).ravel()
+        valid_flat = valid_out.ravel()
         hash_flat = self.hash_grid.ravel()
+        n_total_rays = idxs_out.shape[0] * idxs_out.shape[1]
+        n_steps = idxs_out.shape[2]
 
         visible_hits = cp.full((n_total_rays, 3), -1, dtype=cp.int32)
         hit_flags = cp.zeros((n_total_rays,), dtype=cp.int32)
 
+        # Raycast kernel
         grid = (n_total_rays + 255) // 256
         block = 256
         ray_first_hit_kernel(
@@ -915,22 +1009,27 @@ class TomogramCoveragePlanner(object):
             )
         )
         cp.cuda.Device().synchronize()
+        # t2 = time.time()
 
         visible_hits_np = visible_hits.get().reshape(n, -1, 3)
         hit_flags_np = hit_flags.get().reshape(n, -1)
         explored = cp.asnumpy(self.explored_voxels)
+        min_idx_np = np.array(self.min_idx, dtype=np.int32)
 
-        rewards = []
-        visible_voxels_list = []
-        for i in range(n):
-            hits_i = visible_hits_np[i][hit_flags_np[i] == 1] + self.min_idx
-            visible_set = set(map(tuple, hits_i))
-            reward = sum(1 for v in visible_set if not explored[v[0] - self.min_idx[0],
-                                                                v[1] - self.min_idx[1],
-                                                                v[2] - self.min_idx[2]])
-            visible_voxels_list.append(visible_set)
-            rewards.append(reward)
+        # Fast C++ post-processing
+        # t3 = time.time()
+        rewards, visible_voxels_list = reward_cpp.batched_reward(
+            visible_hits_np, hit_flags_np, explored, min_idx_np
+        )
+        # t4 = time.time()
 
+        # try:
+        #     with open("batched_ray_reward_profile.csv", "a") as f:
+        #         f.write(f"{n},{t1-t0:.6f},{t2-t1:.6f},{t4-t3:.6f},{t4-t0:.6f}\n")
+        # except Exception as e:
+        #     print(f"Failed to write timing log: {e}")
+
+        # print(f"[batched_ray_reward] n={n} setup={t1-t0:.4f}s raycast={t2-t1:.4f}s post={t4-t3:.4f}s total={t4-t0:.4f}s")
         return rewards, visible_voxels_list
 
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
