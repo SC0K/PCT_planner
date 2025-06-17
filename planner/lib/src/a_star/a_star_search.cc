@@ -16,7 +16,23 @@ static std::vector<Eigen::Vector2i> kNeighbors = std::vector<Eigen::Vector2i>{
     Eigen::Vector2i(0, -1),  Eigen::Vector2i(0, 1),  Eigen::Vector2i(1, -1),
     Eigen::Vector2i(1, 0),   Eigen::Vector2i(1, 1),
 };
+Eigen::MatrixXf Astar::compute_adjacency_matrix(const std::vector<Eigen::Vector3i>& sampled_points) {
+    int num_points = sampled_points.size();
+    Eigen::MatrixXf adj_matrix = Eigen::MatrixXf::Constant(num_points, num_points, std::numeric_limits<float>::infinity());
 
+    for (int i = 0; i < num_points; ++i) {
+        for (int j = i + 1; j < num_points; ++j) {
+            bool found = this->Search(sampled_points[i], sampled_points[j]);
+            Eigen::MatrixXd path = this->GetResultMatrix();
+            if (path.rows() > 0) {
+                float path_length = static_cast<float>(path.rows());
+                adj_matrix(i, j) = path_length;
+                adj_matrix(j, i) = path_length;
+            }
+        }
+    }
+    return adj_matrix;
+}
 void Astar::Init(const double cost_threshold, const int num_layers,
                  const double resolution,  const double step_cost_weight, const Eigen::MatrixXd& cost_map,
                  const Eigen::MatrixXd& height_map,
@@ -68,6 +84,7 @@ void Astar::Reset() {
   for (size_t i = 0; i < grid_map_.size(); ++i) {
     for (size_t j = 0; j < grid_map_[i].size(); ++j) {
       for (size_t k = 0; k < grid_map_[i][j].size(); ++k) {
+        grid_map_[i][j][k].parent = nullptr;
         grid_map_[i][j][k].Reset();
       }
     }
@@ -81,10 +98,8 @@ int Astar::GetHash(const Eigen::Vector3i& idx) const {
 bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
   auto t0 = std::chrono::high_resolution_clock::now();
 
-  if (!search_result_.empty()) {
-    Reset();
-    search_result_.clear();
-  }
+  Reset();
+  search_result_.clear();
 
   auto start_node = &grid_map_[start[0]][start[2]][start[1]];
   auto goal_node = &grid_map_[goal[0]][goal[2]][goal[1]];

@@ -22,5 +22,8 @@ PYBIND11_MODULE(a_star, m) {
       .def("get_result_matrix", &Astar::GetResultMatrix)
       .def("get_cost_layer", &Astar::GetCostLayer)
       .def("get_ele_layer", &Astar::GetEleLayer)
-      .def("get_visited_set", &Astar::GetVisitedSet);
+      .def("get_visited_set", &Astar::GetVisitedSet)
+      .def("compute_adjacency_matrix", &Astar::compute_adjacency_matrix,
+         py::arg("sampled_points"),
+         "Compute adjacency matrix for sampled points");
 }

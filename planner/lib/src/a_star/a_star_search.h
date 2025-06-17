@@ -17,7 +17,7 @@ class Node {
   bool operator==(const Node& other) const { return idx == other.idx; }
 
   void Reset() {
-    f = 0.0;
+    f = 1e9;
     g = 1e9;
     parent = nullptr;
   }
@@ -53,6 +53,7 @@ class Astar {
         break;
     };
   }
+  Eigen::MatrixXf compute_adjacency_matrix(const std::vector<Eigen::Vector3i>& sampled_points);
   ~Astar() = default;
 
   void Init(const double cost_threshold, const int num_layers,

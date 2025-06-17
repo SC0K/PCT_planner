@@ -366,40 +366,55 @@ class TomogramCoveragePlanner(object):
         self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
 
         
+    # def compute_adjacency_matrix(self, sampled_points_idx):
+    #     """
+    #     Compute an adjacency matrix where each entry represents the path length between two sampled points.
+    
+    #     Args:
+    #         sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3).
+    
+    #     Returns:
+    #         np.ndarray: Adjacency matrix of size N x N with path lengths.
+    #     """
+    #     num_points = sampled_points_idx.shape[0]
+    #     adj_matrix = np.full((num_points, num_points), np.inf, dtype=np.float32)  # Initialize with infinity
+    
+    #     for i in range(num_points):
+    #         for j in range(i + 1, num_points):  # Only compute for upper triangle (symmetry)
+    #             # self.initPlanner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
+    #             # self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
+    #             # Plan a path between the two points
+    #             # print("Planning path between points:", sampled_points_idx[i], sampled_points_idx[j])
+    #             # self.planner.plan(sampled_points_idx[i], sampled_points_idx[j], True)
+    #             # Swap x and y for planning
+    #             start_idx = np.array([sampled_points_idx[i][0], sampled_points_idx[i][2], sampled_points_idx[i][1]], dtype=np.int32)
+    #             end_idx = np.array([sampled_points_idx[j][0], sampled_points_idx[j][2], sampled_points_idx[j][1]], dtype=np.int32)
+    #             self.planner.plan(start_idx, end_idx, False)
+    #             path_finder: a_star.Astar = self.planner.get_path_finder()
+    #             path = path_finder.get_result_matrix()
+    
+    #             if len(path) > 0:  # If a valid path exists
+    #                 path_length = len(path)  # Use the number of steps as the path length
+    #                 adj_matrix[i, j] = path_length
+    #                 adj_matrix[j, i] = path_length  # Symmetry for undirected graph
+    
+    #     return adj_matrix
+
     def compute_adjacency_matrix(self, sampled_points_idx):
         """
         Compute an adjacency matrix where each entry represents the path length between two sampled points.
-    
         Args:
-            sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3).
-    
+            sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3), (s, x, y).
         Returns:
             np.ndarray: Adjacency matrix of size N x N with path lengths.
         """
-        num_points = sampled_points_idx.shape[0]
-        adj_matrix = np.full((num_points, num_points), np.inf, dtype=np.float32)  # Initialize with infinity
-    
-        for i in range(num_points):
-            for j in range(i + 1, num_points):  # Only compute for upper triangle (symmetry)
-                # self.initPlanner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
-                self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
-                # Plan a path between the two points
-                print("Planning path between points:", sampled_points_idx[i], sampled_points_idx[j])
-                # self.planner.plan(sampled_points_idx[i], sampled_points_idx[j], True)
-                # Swap x and y for planning
-                start_idx = np.array([sampled_points_idx[i][0], sampled_points_idx[i][2], sampled_points_idx[i][1]], dtype=np.int32)
-                end_idx = np.array([sampled_points_idx[j][0], sampled_points_idx[j][2], sampled_points_idx[j][1]], dtype=np.int32)
-                self.planner.plan(start_idx, end_idx, False)
-                path_finder: a_star.Astar = self.planner.get_path_finder()
-                path = path_finder.get_result_matrix()
-    
-                if len(path) > 0:  # If a valid path exists
-                    path_length = len(path)  # Use the number of steps as the path length
-                    adj_matrix[i, j] = path_length
-                    adj_matrix[j, i] = path_length  # Symmetry for undirected graph
-    
-        return adj_matrix
-        
+        # Flip x and y: (s, x, y) -> (s, y, x)
+        sampled_points_flipped = sampled_points_idx.copy()
+        sampled_points_flipped[:, 1], sampled_points_flipped[:, 2] = (
+            sampled_points_flipped[:, 2], sampled_points_flipped[:, 1].copy()
+        )
+        sampled_points_o3d = o3d.utility.Vector3iVector(sampled_points_flipped.astype(np.int32))
+        return self.planner.compute_adjacency_matrix(sampled_points_o3d)
     def plan_with_idx(self, start_pos, end_pos):
 
         self.start_idx = np.array([start_pos[0], start_pos[2], start_pos[1]], dtype=np.int32)   # planner needs s,y,x whereas the grid index is s,x,y

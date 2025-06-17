@@ -55,6 +55,7 @@ class OfflineElePlanner {
   void set_max_iterations(int max_iterations) {
     trajectory_optimizer_.set_max_iterations(max_iterations);
   }
+  Eigen::MatrixXf ComputeAdjacencyMatrix(const std::vector<Eigen::Vector3i>& sampled_points);
 
   const Astar& get_path_finder() const { return path_finder_; }
   const DenseElevationMap& get_map() const { return *map_; }

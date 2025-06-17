@@ -59,3 +59,6 @@ bool OfflineElePlanner::Plan(const Eigen::Vector3i& start,
 
   return true;
 }
+Eigen::MatrixXf OfflineElePlanner::ComputeAdjacencyMatrix(const std::vector<Eigen::Vector3i>& sampled_points) {
+    return path_finder_.compute_adjacency_matrix(sampled_points);
+}

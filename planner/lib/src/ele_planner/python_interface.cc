@@ -28,5 +28,8 @@ PYBIND11_MODULE(ele_planner, m) {
            &OfflineElePlanner::get_trajectory_optimizer)
       .def("get_trajectory_optimizer_wnoj",
            &OfflineElePlanner::get_trajectory_optimizer_wnoj)
-      .def("get_debug_path", &OfflineElePlanner::GetDebugPath);
+      .def("get_debug_path", &OfflineElePlanner::GetDebugPath)
+      .def("compute_adjacency_matrix", &OfflineElePlanner::ComputeAdjacencyMatrix,
+         py::arg("sampled_points"),
+         "Compute adjacency matrix for sampled points");
 }

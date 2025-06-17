@@ -19,12 +19,23 @@ min_cand = df['num_candidates'].min()
 max_cand = df['num_candidates'].max()
 bins = np.logspace(np.log10(min_cand), np.log10(max_cand), 20)
 
-# Compute stacked histogram data
+# Compute histogram: sum of times and count of candidates per bin
 hist_setup, bin_edges = np.histogram(df['num_candidates'], bins=bins, weights=df['setup_time'])
 hist_raycast, _ = np.histogram(df['num_candidates'], bins=bins, weights=df['raycast_time'])
 hist_post, _ = np.histogram(df['num_candidates'], bins=bins, weights=df['post_time'])
+hist_counts, _ = np.histogram(df['num_candidates'], bins=bins)
 
+# Avoid division by zero
+hist_counts = np.maximum(hist_counts, 1)
+
+# Compute average time per candidate
+hist_setup = hist_setup / hist_counts
+hist_raycast = hist_raycast / hist_counts
+hist_post = hist_post / hist_counts
 bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])
+hist_setup = hist_setup * 1000
+hist_raycast = hist_raycast * 1000
+hist_post = hist_post * 1000
 
 # Prepare data for stacked bar plot
 widths = np.diff(bin_edges)
@@ -46,15 +57,14 @@ plt.plot(bin_centers, gaussian_filter1d(hist_total, sigma), 'k-', label='Total T
 
 plt.xticks(fontsize=16)
 plt.yticks(fontsize=16)
-plt.xscale('log')
-plt.yscale('log')
+# plt.xscale('log')
+# plt.yscale('log')
 plt.xlabel('Number of Candidates',fontsize=16)
-plt.ylabel('Time (seconds)',fontsize=16)
-plt.title('Time for Candidate Selection via Raycasting',fontsize=16)
+plt.ylabel('Time (ms)',fontsize=16)
+plt.title('Time for Rewards Calculation of Candidates via Raycasting',fontsize=16)
 plt.legend(fontsize=13)  # Increased font size for the legend
 plt.grid(True, which="both", ls="--")
 plt.tight_layout()
 # Add more ticks to the x-axis and increase font size
-
 
 plt.show()
