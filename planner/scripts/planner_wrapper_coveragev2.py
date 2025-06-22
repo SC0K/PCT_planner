@@ -207,6 +207,7 @@ class TomogramCoveragePlanner(object):
         self.hash_grid = cp.zeros(tuple(self.grid_shape), dtype=cp.bool_)
         for idx in shifted_indices:
             self.hash_grid[tuple(idx)] = True
+        # self.hash_grid_online = self.hash_grid.copy()
 
         # Initialize explored voxels
         self.explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
@@ -287,7 +288,7 @@ class TomogramCoveragePlanner(object):
             max_heading_rate=self.max_heading_rate, use_quintic=self.use_quintic
         )
         self.planner.init_map(
-            20, 15, self.resolution, self.n_slice, 0.2,
+        25, 20, self.resolution, self.n_slice, 0.2,
             trav.reshape(-1, trav.shape[-1]).astype(np.double),
             elev_g.reshape(-1, elev_g.shape[-1]).astype(np.double),
             elev_c.reshape(-1, elev_c.shape[-1]).astype(np.double),
@@ -309,22 +310,7 @@ class TomogramCoveragePlanner(object):
             elev_c (np.ndarray): Ceiling elevation map.
         """
         self.planner.init_map(
-            20, 15, self.resolution, self.n_slice, 0.2,
-            trav.reshape(-1, trav.shape[-1]).astype(np.double),
-            elev_g.reshape(-1, elev_g.shape[-1]).astype(np.double),
-            elev_c.reshape(-1, elev_c.shape[-1]).astype(np.double),
-            self.gateway.reshape(-1, self.gateway.shape[-1]),
-            trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
-            -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
-        )
-    def re_init_planner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
-        """ Initialise the planner without initialising the optimiser."""
-        self.planner.reinit_map(
-            20,
-            15,
-            self.resolution,
-            self.n_slice,
-            0.2,
+            25, 20, self.resolution, self.n_slice, 0.2,
             trav.reshape(-1, trav.shape[-1]).astype(np.double),
             elev_g.reshape(-1, elev_g.shape[-1]).astype(np.double),
             elev_c.reshape(-1, elev_c.shape[-1]).astype(np.double),
@@ -333,7 +319,7 @@ class TomogramCoveragePlanner(object):
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
     
-    def add_obstacle_points(self, world_points, z_buffer=0.5, xy_buffer=0.2):
+    def add_obstacle_points(self, world_points, z_buffer=0.5, xy_buffer=0.3):
         """
         Add new obstacle points to the tomograph by marking all provided points as untraversable.
     
@@ -489,8 +475,8 @@ class TomogramCoveragePlanner(object):
         traj_3d = np.stack([traj[:, 0], traj[:, y_idx], heights / self.resolution], axis=1)
         traj_3d = transTrajGrid2Map(self.map_dim, self.center, self.resolution, traj_3d)
     def plan_online(self, start_pos, end_pos):
-        self.start_idx[:] = self.pos2idx_3D_plan(start_pos)
-        self.end_idx[:] = self.pos2idx_3D_plan(end_pos)
+        self.start_idx[:] = start_pos
+        self.end_idx[:] = end_pos
         print("start_idx:", self.start_idx)
         print("end_idx:", self.end_idx)
 
@@ -516,6 +502,8 @@ class TomogramCoveragePlanner(object):
         if abs(goal_idx[1] - start_idx[1])+abs(goal_idx[2]-start_idx[2]) < 3:
             rospy.logwarn("Target position is too close to the start position, skipping replan.")
             return np.array([start_pos,target_pos])
+        # start_idx = np.array([start_idx[0], start_idx[2], start_idx[1]], dtype=np.int32)  # Swap x/y for grid indexing
+        # goal_idx = np.array([goal_idx[0], goal_idx[2], goal_idx[1]], dtype=np.int32)
         grid_shape = self.trav.shape
         target_height = target_pos[2]
     
@@ -529,15 +517,11 @@ class TomogramCoveragePlanner(object):
             if 0 <= s < grid_shape[0] and 0 <= x < grid_shape[1] and 0 <= y < grid_shape[2]:
                 elev = self.elev_g[s, x, y]
                 if self.trav[s, x, y] < 20 and elev > -90 and abs(elev - target_height) < height_tol:
-                    candidate_idx = np.array([s, y, x])  # Note: swap x/y if needed by your convention
-                    reachable_goal = self.idx2pos_3D(candidate_idx)
+                    reachable_goal = np.array([s, x, y])  # Note: swap x/y if needed by convention
                     break
     
         if reachable_goal is not None:
-            if np.linalg.norm(reachable_goal+np.array([0,0,0.5]) - start_pos) < 0.3:
-                rospy.logwarn("Reachable goal position is too close to the start position, skipping replan.")
-                return np.array([start_pos, reachable_goal])
-            planned_traj = self.plan_online(start_pos, reachable_goal+np.array([0,0,0.5]))
+            planned_traj = self.plan_with_idx_online(start_idx, reachable_goal)
             return planned_traj
         else:
             return None
@@ -634,7 +618,7 @@ class TomogramCoveragePlanner(object):
         # Filter out invalid or untraversable points
         valid_indices = []
         for s, x, y in sampled_indices:
-            if self.trav[s, x, y] < 30 and self.elev_g[s, x, y] > -90:
+            if self.trav[s, x, y] < 15 and self.elev_g[s, x, y] > -90:
                 valid_indices.append([s, x, y])
     
         valid_indices = np.array(valid_indices)
@@ -661,7 +645,107 @@ class TomogramCoveragePlanner(object):
             sampled_xyz[idx] = [map_x, map_y, map_z]
     
         return unique_indices, sampled_xyz
+    def sampleUniformPointsInSpaceOnline(self, num_samples, reachable_from, center_idx, radius):
+        """
+        Sample points uniformly in a local region around a center point, within a given radius.
+        Only traversable points are returned.
     
+        Args:
+            num_samples (int): Maximum number of points to return.
+            reachable_from (np.ndarray): (s, x, y) index or None. If not None, only points reachable from this index are returned.
+            center_idx (np.ndarray): (s, x, y) grid index of the center.
+            radius (float): Sampling radius in meters.
+    
+        Returns:
+            np.ndarray: Array of valid sampled points (s, x, y indices).
+        """
+        s_c, x_c, y_c = np.round(center_idx).astype(int)
+    
+        # Compute grid limits for sampling
+        s_range = range(max(0, s_c - 1), min(self.elev_g.shape[0], s_c + 2))
+        x_min = max(0, int(x_c - radius / self.resolution))
+        x_max = min(self.elev_g.shape[1], int(x_c + radius / self.resolution) + 1)
+        y_min = max(0, int(y_c - radius / self.resolution))
+        y_max = min(self.elev_g.shape[2], int(y_c + radius / self.resolution) + 1)
+    
+        # Sample grid points in the local region
+        sampled_indices = []
+        for s in s_range:
+            for x in range(x_min, x_max):
+                for y in range(y_min, y_max):
+                    dx = (x - x_c) * self.resolution
+                    dy = (y - y_c) * self.resolution
+                    if np.sqrt(dx**2 + dy**2) > radius:
+                        continue
+                    if self.trav[s, x, y] < 15 and self.elev_g[s, x, y] > -90:
+                        sampled_indices.append([s, x, y])
+    
+        if not sampled_indices:
+            return np.empty((0, 3), dtype=np.int32)
+    
+        sampled_indices = np.array(sampled_indices, dtype=np.int32)
+    
+        # Remove duplicates with same (x, y) and similar height
+        unique_points = []
+        seen_xy = {}
+        for s, x, y in sampled_indices:
+            xy_key = (x, y)
+            height = self.elev_g[s, x, y]
+            if xy_key not in seen_xy or np.abs(seen_xy[xy_key] - height) > 0.05:
+                unique_points.append([s, x, y])
+                seen_xy[xy_key] = height
+    
+        unique_indices = np.array(unique_points, dtype=np.int32)
+    
+        # Optionally, filter by reachability from reachable_from
+        if reachable_from is not None:
+            filtered_indices = []
+            for idx in unique_indices:
+                traj = self.plan_with_idx_online(reachable_from, idx)
+                if traj is not None and len(traj) > 1:
+                    filtered_indices.append(idx)
+                if len(filtered_indices) >= num_samples:
+                    break
+            unique_indices = np.array(filtered_indices, dtype=np.int32)
+        else:
+            # Limit to num_samples
+            if len(unique_indices) > num_samples:
+                chosen = np.random.choice(len(unique_indices), num_samples, replace=False)
+                unique_indices = unique_indices[chosen]
+    
+        return unique_indices
+    def filter_reachable_candidates(self, candidate_indices, candidate_xyz, reference_idx=None):
+        """
+        Filter candidate points by checking if they are reachable from a manually chosen valid point.
+        Args:
+            candidate_indices (np.ndarray): (N, 3) grid indices of candidates.
+            candidate_xyz (np.ndarray): (N, 3) world coordinates of candidates.
+            reference_idx (int or None): Index of the manually chosen valid candidate. If None, use the first candidate.
+        Returns:
+            filtered_indices (np.ndarray): Reachable candidate indices.
+            filtered_xyz (np.ndarray): Reachable candidate xyz.
+            reachable_mask (np.ndarray): Boolean mask of reachable candidates.
+        """
+        if reference_idx is None:
+            reference_idx = 0  # Use the first candidate as the reference
+        start_idx = candidate_indices[reference_idx]
+        start_xyz = candidate_xyz[reference_idx]
+    
+        reachable_mask = []
+        for i, (idx, xyz) in enumerate(zip(candidate_indices, candidate_xyz)):
+            if i == reference_idx:
+                reachable_mask.append(True)
+                continue
+            # Plan a path from start_idx to idx
+            traj = self.plan_with_idx_online(start_idx, idx)
+            if traj is not None and len(traj) > 1:
+                reachable_mask.append(True)
+            else:
+                reachable_mask.append(False)
+        reachable_mask = np.array(reachable_mask, dtype=bool)
+        filtered_indices = candidate_indices[reachable_mask]
+        filtered_xyz = candidate_xyz[reachable_mask]
+        return filtered_indices, filtered_xyz
     def sampleTraversablePoints_rad(self, num_samples):
         """
         Sample a uniform set of traversable points from the travel cost map.
@@ -761,6 +845,7 @@ class TomogramCoveragePlanner(object):
         finished = False
 
         sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
+        # sampled_points_idx, sampled_points_xyz = self.filter_reachable_candidates(sampled_points_xyz_raw, sampled_points_idx_raw)
         # sampled_points_xyz = sampled_points_xyz[:1]
         # sampled_points_idx = sampled_points_idx[:1]
         sampled_points_xyz = sampled_points_xyz + np.array([0, 0, 0.6])  # camera height offset
@@ -1051,7 +1136,7 @@ def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_id
                                  fov_deg_ver=90, fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
     # Compute azimuth and elevation angles
     az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
-    el = cp.linspace(-45, 3, n_rays)
+    el = cp.linspace(-45, 0, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())

@@ -7,6 +7,7 @@ class SceneBuilding():
     # pcd.file_name = 'building_2F_4R.pcd'
     # pcd.file_name = 'building_LEE.pcd'
     # pcd.file_name = 'building_LEE_1F.pcd'
+    # pcd.file_name = 'ETH_HPH.pcd'
     pcd.file_name = 'experiments/2F_2*1.pcd'
 
     map = SceneMap()
@@ -23,5 +24,5 @@ class SceneBuilding():
     trav.standable_ratio = 0.10
     trav.cost_barrier = 50.0
     trav.safe_margin = 0.5
-    trav.inflation = 0.1
+    trav.inflation = 0.2
 

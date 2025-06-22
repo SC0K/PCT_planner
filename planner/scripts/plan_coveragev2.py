@@ -28,8 +28,9 @@ if args.scene == 'Spiral':
     end_pos = np.array([-26.0, -5.0], dtype=np.float32)
 elif args.scene == 'Building':
     # tomo_file = 'building2_9'
-    tomo_file = 'experiments/1F_2*1'
-    # tomo_file = 'building_LEE'
+    tomo_file = 'experiments/2F_2*1'
+    # tomo_file = 'building_LEE_1F'
+    # tomo_file = 'ETH_HPH'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
     end_pos = np.array([-6.0, -1.0, 5], dtype=np.float32)
 else:
@@ -72,6 +73,22 @@ def pct_plan():
     # if traj_3d is not None:
     #     path_pub.publish(traj2ros(traj_3d))
     #     print("Trajectory published")
+####################################################################
+    # sensor_ranges = [1.5,2,2.5,3,3.5,4,6,8,10]
+    # fovs = [ 60, 70, 80, 90, 100, 120, 130, 140, 150, 180, 200, 210, 220, 240, 250, 270, 300, 330, 360]
+    # for fov in fovs:
+    #     planner.sensor_fov = fov
+    #     planner.sensor_range = 4.0
+    #     planner.loadVoxelMap(voxel_map_path, voxel_map_resolution)
+    #     start_time = time.time()
+    #     candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
+    #     # planner.visualizeExploredGrid()
+    #     elapsed = time.time() - start_time
+    #     print(f" {elapsed:.4f} seconds")
+    #     # print(f"Sensor Range: {sensor_range} meters")
+    #     print(f"Sensor FOV: {fov} degrees")
+    #     print("Candidate points:", candidate_points_xyz.shape)
+
 # ################################################################
     # num_runs = 1
     # timings = []
@@ -91,7 +108,7 @@ def pct_plan():
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
     candidate_angles = np.load("sampled_points_angles.npy")
     print("Candidate points:", candidate_angles.shape)
-    publish_points(candidate_points_xyz)
+    # publish_points(candidate_points_xyz)
     
 
 #################### Compute adjacency matrix computation ##############################
@@ -100,21 +117,22 @@ def pct_plan():
     adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
     time_enda = time.time()
     print("Candidate points:", candidate_points_xyz.shape)
+    # print(f"Adjacency matrix computed in {time_enda - time_starta:.2f} seconds")
     np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
 #     ## Optioal sometimes: make sure that the first candidate point is a valid view point (reachabl)
-    # i,j = 0, 1
-    # adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
-    # adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
-    # candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
-    # candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
-    # candidate_angles[[i, j]] = candidate_angles[[j, i]]
+    i,j = 0, 0
+    adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
+    adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
+    candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
+    candidate_points_xyz[[i, j]] = candidate_points_xyz[[j, i]]
+    candidate_angles[[i, j]] = candidate_angles[[j, i]]
     # publish start point:
-    # start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
-    # print("Viewpoints:", candidate_points_idx)
-    # publish_points(start_point.reshape(1, 3), frame_id="map")
+    start_point = np.array([candidate_points_xyz[0][0], candidate_points_xyz[0][1], candidate_points_xyz[0][2]], dtype=np.float32)
+    print("Viewpoints:", candidate_points_idx)
+    publish_points(start_point.reshape(1, 3), frame_id="map")
 
     
     # np.set_printoptions(threshold=np.inf)
@@ -131,14 +149,13 @@ def pct_plan():
     # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
     # np.set_printoptions(threshold=np.inf)
     # print("Adjacency matrix:", updated_adjacency_matrix)  
-    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
-    # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
     time_start1 = time.time()
-    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
+    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
+    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
+    tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
     time_end1 = time.time()
     
     np.save("shortest_path_idx.npy", tsp_path)
-    # publish_points(updated_sampled_points_xyz)
     ## TODO: recompute the explored region because some candidates that are not reachable are removed   
     print("TSP Path:", tsp_path)
     print("TSP Cost:", tsp_cost)
@@ -162,12 +179,14 @@ def pct_plan():
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
     explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
+    publish_points(updated_sampled_points_xyz)
     area = compute_covered_area(explored_cells, planner.resolution_raycast)
     print(f"Covered Area: {area:.2f} m^2")
     print(f"TSP solved in {time_end1 - time_start1:.4f} seconds")
     print(f"Time taken to remove unreachable nodes: {time_end - time_start:.4f} seconds")
     print(f"Full trajectory generated in {time_end2 - time_start2:.4f} seconds")
-    print(f"Adjacency matrix computed in {time_enda - time_starta:.2f} seconds")
+    # print(f"Adjacency matrix computed in {time_enda - time_starta:.2f} seconds")
+    print(f"Number of candidate points: {len(updated_sampled_points_idx)}")
 
 def compute_explored_region(points_idx):
     """

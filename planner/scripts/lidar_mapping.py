@@ -36,6 +36,8 @@ class LidarMapperNode:
         self.persistence_counter = np.zeros(planner.grid_shape, dtype=np.uint16)
         self.persistence_threshold = 10
         self.added_voxels = set()
+        self.dilate_scanned_voxels = False
+        self.dilation_size_scanned = 1
 
     def lidar_callback(self, msg):
         try:
@@ -70,7 +72,16 @@ class LidarMapperNode:
             indices_np = cp.asnumpy(valid_voxel_indices_cp)
             if indices_np.shape[0] == 0:
                 return
-    
+
+            # === Optionally dilate scanned voxels ===
+            if self.dilate_scanned_voxels:
+                scanned_grid = cp.zeros(self.grid_shape, dtype=cp.bool_)
+                scanned_grid[valid_voxel_indices_cp[:, 0], valid_voxel_indices_cp[:, 1], valid_voxel_indices_cp[:, 2]] = True
+                structure = cp.ones((2 * self.dilation_size_scanned + 1,) * 3, dtype=cp.bool_)
+                scanned_grid = cupyx.scipy.ndimage.binary_dilation(scanned_grid, structure=structure)
+                dilated_indices_cp = cp.argwhere(scanned_grid)
+                indices_np = cp.asnumpy(dilated_indices_cp)
+
             # Publish as PointCloud2 for visualization
             vis_points = []
             for idx in indices_np:
@@ -129,5 +140,6 @@ if __name__ == "__main__":
 
     # planner.loadTomogram("building_2F_4R")
     planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1075)
+    # planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE_1F.pcd", 0.2)
     node = LidarMapperNode(planner)
     rospy.spin()

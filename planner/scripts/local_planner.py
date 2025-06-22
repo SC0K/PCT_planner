@@ -19,6 +19,7 @@ import time
 from std_msgs.msg import Header, Empty
 from sensor_msgs.msg import PointField
 from std_msgs.msg import Int32MultiArray
+from python_tsp.heuristics import solve_tsp_simulated_annealing, solve_tsp_local_search
 POINT_FIELDS_XYZI = [
     PointField('x', 0, PointField.FLOAT32, 1),
     PointField('y', 4, PointField.FLOAT32, 1),
@@ -64,7 +65,7 @@ class LidarMappingNode:
         self.replanning = False
 
         self.process_voxel_timer = rospy.Timer(rospy.Duration(1), self.find_critical_points)
-        self.update_global_path_timer = rospy.Timer(rospy.Duration(3), self.replan_global_path)
+        self.update_global_path_timer = rospy.Timer(rospy.Duration(5), self.replan_global_path)
 
         candidate_points_xyz = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points.npy")
         candidate_points_angles = np.load("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/scripts/reachable_sampled_points_angles.npy")
@@ -81,6 +82,7 @@ class LidarMappingNode:
         self.candidate_points_angles = np.zeros_like(candidate_points_angles)
         self.candidate_points_idx = np.zeros_like(candidate_points_idx, dtype=np.int32)
         self.hash_grid = self.planner.hash_grid
+        # self.hash_grid_online = self.planner.hash_grid_online.copy()
         for i, idx in enumerate(self.candidate_path_idx):
             self.candidate_points_xyz[i] = candidate_points_xyz[idx] + np.array([0,0,0.5])
             self.candidate_points_angles[i] = candidate_points_angles[idx]    
@@ -116,7 +118,7 @@ class LidarMappingNode:
 
         self.last_robot_pose = None
         self.stuck_counter = 0
-        self.stuck_threshold = 10
+        self.stuck_threshold = 20 # seconds = N * step_rate
         self.use_dilation = False
         self.use_dilation_new_obstacles = True
         self.dilation_size = 1   
@@ -151,7 +153,7 @@ class LidarMappingNode:
         if self.last_robot_pose is not None:
             pos_diff = np.linalg.norm(np.array(self.robot_position) - np.array(self.last_robot_pose[0]))
             ori_diff = np.linalg.norm(np.array(self.robot_orientation) - np.array(self.last_robot_pose[1]))
-            if pos_diff < 1e-3 and ori_diff < 1e-3:
+            if pos_diff < 0.1 and ori_diff < 0.1:
                 self.stuck_counter += 1
             else:
                 self.stuck_counter = 0
@@ -198,6 +200,11 @@ class LidarMappingNode:
         return True
 
     def step(self):
+        if self.is_robot_stuck():
+            self.state = self.STATE_FOLLOW_PATH
+        if self.replanning:
+            rospy.loginfo("Replanning in progress...")
+            return
         rospy.loginfo("Current state: %s", self.state)
         rospy.loginfo("Number of critical points: %d", len(self.critical_points))
         if self.critical_points or self.state == self.STATE_CRITICAL_POINT:
@@ -208,8 +215,6 @@ class LidarMappingNode:
             self.handle_follow_path()
         elif self.state == self.STATE_COVERAGE:
             self.handle_coverage()
-        elif self.state == self.STATE_RECOVERY:
-            self.handle_recovery()
     def handle_critical_points(self):
         if self.critical_points:
             critical_points_xyz = (np.array(self.critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
@@ -257,14 +262,14 @@ class LidarMappingNode:
         eigvals, eigvecs = np.linalg.eigh(cov)
         major_axis = eigvecs[:, np.argmax(eigvals)]
         minor_axis = eigvecs[:, np.argmin(eigvals)]
-        r_major = max(np.sqrt(eigvals.max()), 1.5)  # at least 1m from center
-        r_minor = max(np.sqrt(eigvals.min()), 1.5)  # at least 1m from center
+        r_major = max(np.sqrt(eigvals.max()), 1.5)
+        r_minor = max(np.sqrt(eigvals.min()), 1.5) 
         
         # --- Circling the centroid: select viewpoints around the ellipse ---
         if not hasattr(self, 'ellipse_view_idx'):
             self.ellipse_view_idx = 0
         
-        num_views = 100  # e.g., 15 degrees per step
+        num_views = 100  # Number of viewpoints around the ellipse
         theta = 2 * np.pi * self.ellipse_view_idx / num_views
         theta2 = -theta 
         view_dir = np.array([np.cos(theta), np.sin(theta)])
@@ -386,10 +391,10 @@ class LidarMappingNode:
                     total_voxels_local = cp.sum(self.target_voxels_candidates[self.next_candidate_xyz_idx-1])
                     unscanned_voxels_count = cp.sum(unscanned_voxels_local)
                     unscanned_percentage = (unscanned_voxels_count / total_voxels_local) * 100
-                    if unscanned_percentage > 5.0:
+                    if unscanned_percentage > 10.0:
                         unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
                         unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
-                        if unscanned_patch_size > 5:
+                        if unscanned_patch_size > 10:
                             # unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
                             # shift_distance = self.coverage_shift_distance
                             # rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])))[:3, :3]
@@ -406,7 +411,6 @@ class LidarMappingNode:
                             self.state = self.STATE_COVERAGE
                             return
     def find_critical_points(self,event):
-        # --- Process new voxels in buffer ---
         if self.replanning:
             rospy.loginfo("Replanning in progress, skipping critical point processing.")
             return
@@ -541,7 +545,7 @@ class LidarMappingNode:
         unscanned_voxels_count = cp.sum(unscanned_voxels_local)
         unscanned_percentage = (unscanned_voxels_count / total_voxels_local) * 100
     
-        if unscanned_percentage <= 5.0:
+        if unscanned_percentage <= 10.0:
             rospy.loginfo("Unscanned percentage below threshold.")
             self.state = self.STATE_FOLLOW_PATH
             self.current_waypoint_idx += 1
@@ -557,7 +561,7 @@ class LidarMappingNode:
             return
     
         unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
-        if unscanned_patch_size <= 5:
+        if unscanned_patch_size <= 10:
             rospy.loginfo("No sufficiently large unscanned patch found.")
             self.state = self.STATE_FOLLOW_PATH
             self.current_waypoint_idx += 1
@@ -574,7 +578,7 @@ class LidarMappingNode:
         eigvals, eigvecs = np.linalg.eigh(cov)
         normal = eigvecs[:, np.argmin(eigvals)]  # Normal vector (least variance)
         
-        shift_distance = 1.5 
+        shift_distance = 1.5  
         
         # ... after computing normal_xy as before ...
         if abs(normal[2]) > 0.7:
@@ -615,11 +619,20 @@ class LidarMappingNode:
             rospy.loginfo("Waiting for replanning to finish...")
             rospy.sleep(0.1)  # Sleep for 100ms
         planned_traj = self.planner.online_local_replan(robot_pos, unscanned_center, height_tol=1.5)
-        if planned_traj is None or len(planned_traj) < 2:
+        if planned_traj is None or len(planned_traj) < 3:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
-            self.state = self.STATE_FOLLOW_PATH
-            self.current_waypoint_idx += 1
-            self.coverage_start_time = None
+            # Use candidate angle for orientation
+            angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
+            orientation = tf_trans.quaternion_from_euler(0, 0, angle)
+            orientation = Quaternion(*orientation)
+            goal_msg = PoseStamped()
+            goal_msg.header.stamp = rospy.Time.now()
+            goal_msg.header.frame_id = "map"
+            goal_msg.pose.position.x = unscanned_center[0]
+            goal_msg.pose.position.y = unscanned_center[1]
+            goal_msg.pose.position.z = unscanned_center[2]
+            goal_msg.pose.orientation = orientation
+            self.goal_pub.publish(goal_msg)
             return
     
         # === Publish replanned trajectory for visualization ===
@@ -640,14 +653,14 @@ class LidarMappingNode:
         dists = np.linalg.norm(planned_traj - robot_pos, axis=1)
         closest_idx = np.argmin(dists)
     
-        # If close to the last point, finish coverage
-        distance_threshold = 0.2  # meters
-        if np.linalg.norm(robot_pos - planned_traj[-1]) < distance_threshold:
-            rospy.loginfo("Reached coverage target.")
-            self.state = self.STATE_FOLLOW_PATH
-            self.current_waypoint_idx += 1
-            self.coverage_start_time = None
-            return
+        # # If close to the last point, finish coverage
+        # distance_threshold = 0.2  # meters
+        # if np.linalg.norm(robot_pos - planned_traj[-1]) < distance_threshold:
+        #     rospy.loginfo("Reached coverage target.")
+        #     self.state = self.STATE_FOLLOW_PATH
+        #     self.current_waypoint_idx += 1
+        #     self.coverage_start_time = None
+        #     return
     
         # Otherwise, send the next point as goal, always facing the unscanned center
         if closest_idx + 3 < len(planned_traj):
@@ -694,40 +707,104 @@ class LidarMappingNode:
             self.replanning = True
             # Use candidate_points_xyz for candidate positions
             remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
+            remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
+            if remaining_candidates.ndim == 1:
+                if remaining_candidates.size % 3 != 0 or remaining_candidates.size == 0:
+                    rospy.logwarn("Remaining candidates array cannot be reshaped to (-1, 3). Skipping replanning.")
+                    self.replanning = False
+                    self.tomo_update_flag = False
+                    return
+                remaining_candidates = remaining_candidates.reshape(-1, 3)
             full_trajectory = []
             segment_trajectories = {}
     
             for i in range(len(remaining_candidates) - 1):
                 start_pos = remaining_candidates[i]
                 end_pos = remaining_candidates[i + 1]
-            
-                traj_3d = self.planner.plan_with_idx_online(start_pos, end_pos)
-                if traj_3d is not None:
-                    full_trajectory.extend(traj_3d)
-                    segment_trajectories[(i, i+1)] = np.array(traj_3d)
-                else:
-                    rospy.logwarn(f"Failed to compute trajectory between {start_pos} and {end_pos}, searching along segment path...")
-                    # Use segment_path to reduce computation
-                    segment = self.segment_path[(i+1,i+2)]  # segment is a dense array of points
+                if self.planner.trav[start_pos[0], start_pos[1], start_pos[2]] > 15:
+                    segment = self.segment_path[(i, i+1)]
                     stride = 10  # check every 10th point
-                    
                     found = False
                     for idx in range(0, len(segment), stride):
                         pt = segment[idx]
                         pt_idx = self.planner.pos2idx_3D_plan(pt)
                         cost = self.planner.trav[pt_idx[0], pt_idx[2], pt_idx[1]]
                         rospy.logwarn(f"Checking sparse point {pt} with idx {pt_idx} and cost {cost:.2f}")
-                        if cost < 20:
-                            traj_3d_future = self.planner.plan_with_idx_online(start_pos, pt_idx)
-                            if traj_3d_future is not None:
-                                full_trajectory.extend(traj_3d_future)
-                                segment_trajectories[(i, f"segment_{pt}")] = np.array(traj_3d_future)
-                                found = True
-                                break
+                        if cost < 15:
+                            # traj_3d_future = self.planner.plan_with_idx_online(start_pos, pt_idx)
+                            # if traj_3d_future is not None:
+                            self.candidate_points_idx[i] = pt_idx
+                            self.candidate_points_xyz[i] = pt
+                            found = True
+                            break
                     if not found:
                         rospy.logwarn(f"No traversable path found from candidate {i} to any sparse point in segment.")
+                        # remove the candidate point if no valid path found
+                        self.candidate_points_idx = np.delete(self.candidate_points_idx, i)
+                if self.planner.trav[end_pos[0], end_pos[1], end_pos[2]] > 15:
+                    segment = self.segment_path[(i+1, i+2)]
+                    stride = 10  # check every 10th point
+                    found = False
+                    for idx in range(0, len(segment), stride):
+                        pt = segment[idx]
+                        pt_idx = self.planner.pos2idx_3D_plan(pt)
+                        pt_idx = np.array([pt_idx[0], pt_idx[2], pt_idx[1]])  # Adjust for planner's idx order
+                        cost = self.planner.trav[pt_idx[0], pt_idx[1], pt_idx[2]]
+                        rospy.logwarn(f"Checking sparse point {pt} with idx {pt_idx} and cost {cost:.2f}")
+                        if cost < 15:
+                            # traj_3d_future = self.planner.plan_with_idx_online(start_pos, pt_idx)
+                            # if traj_3d_future is not None:
+                            self.candidate_points_idx[i+1] = pt_idx
+                            self.candidate_points_xyz[i+1] = pt
+                            found = True
+                            break
+                    if not found:
+                        rospy.logwarn(f"No traversable path found from candidate {i+1} to any sparse point in segment.")
+                        self.candidate_points_idx = np.delete(self.candidate_points_idx, i+1)
+            remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
+            remaining_candidates_xyz = self.candidate_points_xyz[self.next_candidate_xyz_idx:]
+            if remaining_candidates.ndim == 1:
+                if remaining_candidates.size % 3 != 0 or remaining_candidates.size == 0:
+                    rospy.logwarn("Remaining candidates array cannot be reshaped to (-1, 3). Skipping replanning.")
+                    self.replanning = False
+                    self.tomo_update_flag = False
+                    return
+                remaining_candidates = remaining_candidates.reshape(-1, 3)
+            if len(remaining_candidates) < 2:
+                rospy.logwarn("Not enough remaining candidates for adjacency/TSP. Skipping replanning.")
+                self.replanning = False
+                self.tomo_update_flag = False
+                return
+            
+            adjacency = self.planner.compute_adjacency_matrix(remaining_candidates)
+            tsp_result = solve_tsp_local_search(adjacency, x0=0)
+            if isinstance(tsp_result, tuple):
+                tsp_path = tsp_result[0]
+            else:
+                tsp_path = tsp_result
+            tsp_path = np.array(tsp_path).astype(int).flatten() 
+            
+            global_path = [remaining_candidates[i] for i in tsp_path]
+            global_xyz_path = [remaining_candidates_xyz[i] for i in tsp_path]
+            full_trajectory = []
+            segment_trajectories = {}
+            for i in range(len(global_path) - 1):
+                start_pos = global_path[i]
+                end_pos = global_path[i + 1]
+                traj_3d = self.planner.plan_with_idx_online(start_pos, end_pos)
+                if traj_3d is not None:
+                    full_trajectory.extend(traj_3d)
+                    segment_trajectories[(i, i+1)] = np.array(traj_3d)
+                else:
+                    rospy.logwarn(f"Failed to compute trajectory between {start_pos} and {end_pos}")
+
+
             self.replanning = False
             self.global_path = np.array(full_trajectory)
+            # robot_pos = np.array(self.robot_position)
+            # dists = np.linalg.norm(self.global_path - robot_pos, axis=1)
+            # self.current_waypoint_idx = int(np.argmin(dists))
+            self.current_waypoint_idx = 0
             self.tomo_update_flag = False
     def publishTomogram(self, elev_g, trav):
         header = Header()
@@ -894,8 +971,10 @@ class LidarMappingNode:
         for idx in indices:
             idx_tuple = tuple(idx)
             if idx_tuple not in self.added_voxels:
-                # #########")
                 new_voxels.append(idx_tuple)
+                x, y, z = idx_tuple
+                # self.hash_grid_online[x, y, z] = True
+                # self.planner.hash_grid_online[x, y, z] = True  # Update the hash grid with new voxel
         self.new_voxel_buffer.extend(new_voxels)
     
         # # --- Efficient projection of new voxels onto hash grid ---
@@ -971,6 +1050,7 @@ if __name__ == "__main__":
     planner = TomogramCoveragePlanner(cfg)
     planner.loadTomogram("experiments/2F_2*1")
     planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1075)
+    # planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE_1F.pcd", 0.2)
     node = LidarMappingNode(planner)
     node.follow_path()
     rospy.spin()

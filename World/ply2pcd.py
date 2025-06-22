@@ -2,7 +2,7 @@ import open3d as o3d
 import os
 
 # input_path = "/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE_1F.ply"
-input_path = "/home/sitong//Documents/experiments_buildings/sampled/2F_2*1.ply"
+input_path = "/home/sitong//Documents/experiments_buildings/sampled/ETH_HPH.ply"
 output_path = os.path.splitext(input_path)[0] + ".pcd"
 
 pcd = o3d.io.read_point_cloud(input_path)

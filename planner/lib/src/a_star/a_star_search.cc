@@ -6,6 +6,7 @@
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
+#include <omp.h>
 
 using std::cout;
 using std::endl;
@@ -20,14 +21,22 @@ Eigen::MatrixXf Astar::compute_adjacency_matrix(const std::vector<Eigen::Vector3
     int num_points = sampled_points.size();
     Eigen::MatrixXf adj_matrix = Eigen::MatrixXf::Constant(num_points, num_points, std::numeric_limits<float>::infinity());
 
+    // Parallelize the outer loop with OpenMP
+    #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < num_points; ++i) {
+        // Each thread needs its own Astar instance to avoid race conditions
+        Astar local_astar = *this; // Copy the current Astar instance
         for (int j = i + 1; j < num_points; ++j) {
-            bool found = this->Search(sampled_points[i], sampled_points[j]);
-            Eigen::MatrixXd path = this->GetResultMatrix();
+            bool found = local_astar.Search(sampled_points[i], sampled_points[j]);
+            Eigen::MatrixXd path = local_astar.GetResultMatrix();
             if (path.rows() > 0) {
                 float path_length = static_cast<float>(path.rows());
-                adj_matrix(i, j) = path_length;
-                adj_matrix(j, i) = path_length;
+                // Use critical section to safely write to adj_matrix
+                #pragma omp critical
+                {
+                    adj_matrix(i, j) = path_length;
+                    adj_matrix(j, i) = path_length;
+                }
             }
         }
     }
