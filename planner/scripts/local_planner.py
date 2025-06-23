@@ -701,13 +701,58 @@ class LidarMappingNode:
         rospy.loginfo(f"Added {len(world_points)} new obstacle points to tomograph.")
         self.tomo_update_flag = True
         return True
+    def select_best_reachable_candidate(self, prev_candidate_idx, center_idx, radius, num_samples=5):
+        """
+        Sample candidate points around center_idx and select the best reachable one from prev_candidate_idx.
+    
+        Args:
+            prev_candidate_idx (np.ndarray): (s, x, y) grid index of previous candidate.
+            center_idx (np.ndarray): (s, x, y) grid index of the center to sample around.
+            radius (float): Sampling radius in meters.
+            num_samples (int): Number of points to sample.
+    
+        Returns:
+            np.ndarray: (s, x, y) grid index of the best reachable candidate, or None if none found.
+        """
+        # Sample candidate points in the region
+        sampled_indices = self.planner.sampleUniformPointsInSpaceOnline(
+            num_samples=num_samples,
+            reachable_from=prev_candidate_idx,
+            center_idx=center_idx,
+            radius=radius
+        )
+    
+        if sampled_indices.shape[0] == 0:
+            rospy.logwarn("No valid sampled candidates found around center_idx.")
+            return None
+    
+        # Evaluate reachability and select the closest to center_idx
+        best_idx = None
+        best_dist = float('inf')
+        for idx in sampled_indices:
+            traj = self.planner.plan_with_idx_online(prev_candidate_idx, idx)
+            if traj is not None and len(traj) > 1:
+                dist = np.linalg.norm(np.array(idx) - np.array(center_idx))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = idx
+    
+        if best_idx is None:
+            rospy.logwarn("No reachable candidate found from previous candidate.")
+            return None
+    
+        return np.array(best_idx, dtype=np.int32)
+    
     def replan_global_path(self, event):
         if self.next_candidate_xyz_idx < len(self.candidate_points_xyz) - 1 and self.tomo_update_flag:
             rospy.loginfo("replan_global_path timer fired")
             self.replanning = True
-            # Use candidate_points_xyz for candidate positions
+            t_start = time.time()
             remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
-            remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
+            self.candidate_points_xyz = self.candidate_points_xyz[self.next_candidate_xyz_idx:]
+            self.candidate_points_angles = self.candidate_points_angles[self.next_candidate_xyz_idx:]
+            self.candidate_points_idx = self.candidate_points_idx[self.next_candidate_xyz_idx:]
+            self.next_candidate_xyz_idx = 0
             if remaining_candidates.ndim == 1:
                 if remaining_candidates.size % 3 != 0 or remaining_candidates.size == 0:
                     rospy.logwarn("Remaining candidates array cannot be reshaped to (-1, 3). Skipping replanning.")
@@ -718,49 +763,53 @@ class LidarMappingNode:
             full_trajectory = []
             segment_trajectories = {}
     
+            t_check_candidates = time.time()
             for i in range(len(remaining_candidates) - 1):
                 start_pos = remaining_candidates[i]
                 end_pos = remaining_candidates[i + 1]
                 if self.planner.trav[start_pos[0], start_pos[1], start_pos[2]] > 15:
-                    segment = self.segment_path[(i, i+1)]
-                    stride = 10  # check every 10th point
-                    found = False
-                    for idx in range(0, len(segment), stride):
-                        pt = segment[idx]
-                        pt_idx = self.planner.pos2idx_3D_plan(pt)
-                        cost = self.planner.trav[pt_idx[0], pt_idx[2], pt_idx[1]]
-                        rospy.logwarn(f"Checking sparse point {pt} with idx {pt_idx} and cost {cost:.2f}")
-                        if cost < 15:
-                            # traj_3d_future = self.planner.plan_with_idx_online(start_pos, pt_idx)
-                            # if traj_3d_future is not None:
-                            self.candidate_points_idx[i] = pt_idx
-                            self.candidate_points_xyz[i] = pt
-                            found = True
-                            break
-                    if not found:
-                        rospy.logwarn(f"No traversable path found from candidate {i} to any sparse point in segment.")
-                        # remove the candidate point if no valid path found
-                        self.candidate_points_idx = np.delete(self.candidate_points_idx, i)
+                    rospy.logwarn(f"Start candidate {i} not traversable, searching for replacement...")
+                    t_select_start = time.time()
+                    best_idx = self.select_best_reachable_candidate(
+                        prev_candidate_idx=remaining_candidates[i-1] if i > 0 else start_pos,
+                        center_idx=start_pos,
+                        radius=2.0,
+                        num_samples=5
+                    )
+                    t_select_end = time.time()
+                    rospy.loginfo(f"Time to select replacement for start candidate {i}: {t_select_end - t_select_start:.3f} s")
+                    if best_idx is not None:
+                        self.candidate_points_idx[self.next_candidate_xyz_idx + i] = best_idx
+                        remaining_candidates[i] = best_idx
+                    else:
+                        rospy.logwarn(f"No reachable replacement found for start candidate {i}, removing.")
+                        self.candidate_points_idx = np.delete(self.candidate_points_idx, self.next_candidate_xyz_idx + i, axis=0)
+                        remaining_candidates = np.delete(remaining_candidates, i, axis=0)
+                        continue
+    
                 if self.planner.trav[end_pos[0], end_pos[1], end_pos[2]] > 15:
-                    segment = self.segment_path[(i+1, i+2)]
-                    stride = 10  # check every 10th point
-                    found = False
-                    for idx in range(0, len(segment), stride):
-                        pt = segment[idx]
-                        pt_idx = self.planner.pos2idx_3D_plan(pt)
-                        pt_idx = np.array([pt_idx[0], pt_idx[2], pt_idx[1]])  # Adjust for planner's idx order
-                        cost = self.planner.trav[pt_idx[0], pt_idx[1], pt_idx[2]]
-                        rospy.logwarn(f"Checking sparse point {pt} with idx {pt_idx} and cost {cost:.2f}")
-                        if cost < 15:
-                            # traj_3d_future = self.planner.plan_with_idx_online(start_pos, pt_idx)
-                            # if traj_3d_future is not None:
-                            self.candidate_points_idx[i+1] = pt_idx
-                            self.candidate_points_xyz[i+1] = pt
-                            found = True
-                            break
-                    if not found:
-                        rospy.logwarn(f"No traversable path found from candidate {i+1} to any sparse point in segment.")
-                        self.candidate_points_idx = np.delete(self.candidate_points_idx, i+1)
+                    rospy.logwarn(f"End candidate {i+1} not traversable, searching for replacement...")
+                    t_select_start = time.time()
+                    best_idx = self.select_best_reachable_candidate(
+                        prev_candidate_idx=start_pos,
+                        center_idx=end_pos,
+                        radius=2.0,
+                        num_samples=5
+                    )
+                    t_select_end = time.time()
+                    rospy.loginfo(f"Time to select replacement for end candidate {i+1}: {t_select_end - t_select_start:.3f} s")
+                    if best_idx is not None:
+                        self.candidate_points_idx[self.next_candidate_xyz_idx + i + 1] = best_idx
+                        remaining_candidates[i + 1] = best_idx
+                    else:
+                        rospy.logwarn(f"No reachable replacement found for end candidate {i+1}, removing.")
+                        self.candidate_points_idx = np.delete(self.candidate_points_idx, self.next_candidate_xyz_idx + i + 1, axis=0)
+                        remaining_candidates = np.delete(remaining_candidates, i + 1, axis=0)
+                        continue
+    
+            t_candidates_checked = time.time()
+            rospy.loginfo(f"Time for candidate traversability check and replacement: {t_candidates_checked - t_check_candidates:.3f} s")
+    
             remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
             remaining_candidates_xyz = self.candidate_points_xyz[self.next_candidate_xyz_idx:]
             if remaining_candidates.ndim == 1:
@@ -775,19 +824,28 @@ class LidarMappingNode:
                 self.replanning = False
                 self.tomo_update_flag = False
                 return
-            
+    
+            t_adjacency_start = time.time()
             adjacency = self.planner.compute_adjacency_matrix(remaining_candidates)
+            t_adjacency_end = time.time()
+            rospy.loginfo(f"Time to compute adjacency matrix: {t_adjacency_end - t_adjacency_start:.3f} s")
+    
+            t_tsp_start = time.time()
             tsp_result = solve_tsp_local_search(adjacency, x0=0)
             if isinstance(tsp_result, tuple):
                 tsp_path = tsp_result[0]
             else:
                 tsp_path = tsp_result
-            tsp_path = np.array(tsp_path).astype(int).flatten() 
-            
+            tsp_path = np.array(tsp_path).astype(int).flatten()
+            t_tsp_end = time.time()
+            rospy.loginfo(f"Time to solve TSP: {t_tsp_end - t_tsp_start:.3f} s")
+    
             global_path = [remaining_candidates[i] for i in tsp_path]
             global_xyz_path = [remaining_candidates_xyz[i] for i in tsp_path]
             full_trajectory = []
             segment_trajectories = {}
+    
+            t_path_start = time.time()
             for i in range(len(global_path) - 1):
                 start_pos = global_path[i]
                 end_pos = global_path[i + 1]
@@ -797,13 +855,17 @@ class LidarMappingNode:
                     segment_trajectories[(i, i+1)] = np.array(traj_3d)
                 else:
                     rospy.logwarn(f"Failed to compute trajectory between {start_pos} and {end_pos}")
-
-
+                    self.replanning = False
+                    self.tomo_update_flag = False
+                    return
+            t_path_end = time.time()
+            rospy.loginfo(f"Time to plan all path segments: {t_path_end - t_path_start:.3f} s")
+    
+            t_end = time.time()
+            rospy.loginfo(f"Total online replan time: {t_end - t_start:.3f} s")
+    
             self.replanning = False
             self.global_path = np.array(full_trajectory)
-            # robot_pos = np.array(self.robot_position)
-            # dists = np.linalg.norm(self.global_path - robot_pos, axis=1)
-            # self.current_waypoint_idx = int(np.argmin(dists))
             self.current_waypoint_idx = 0
             self.tomo_update_flag = False
     def publishTomogram(self, elev_g, trav):

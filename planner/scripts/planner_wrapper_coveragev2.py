@@ -651,7 +651,7 @@ class TomogramCoveragePlanner(object):
         Only traversable points are returned.
     
         Args:
-            num_samples (int): Maximum number of points to return.
+            num_samples (int): Maximum number of points to return (limit before reachability check).
             reachable_from (np.ndarray): (s, x, y) index or None. If not None, only points reachable from this index are returned.
             center_idx (np.ndarray): (s, x, y) grid index of the center.
             radius (float): Sampling radius in meters.
@@ -697,21 +697,18 @@ class TomogramCoveragePlanner(object):
     
         unique_indices = np.array(unique_points, dtype=np.int32)
     
-        # Optionally, filter by reachability from reachable_from
+        if len(unique_indices) > num_samples:
+            chosen = np.random.choice(len(unique_indices), num_samples, replace=False)
+            unique_indices = unique_indices[chosen]
+    
+        # filter by reachability from reachable_from
         if reachable_from is not None:
             filtered_indices = []
             for idx in unique_indices:
                 traj = self.plan_with_idx_online(reachable_from, idx)
                 if traj is not None and len(traj) > 1:
                     filtered_indices.append(idx)
-                if len(filtered_indices) >= num_samples:
-                    break
             unique_indices = np.array(filtered_indices, dtype=np.int32)
-        else:
-            # Limit to num_samples
-            if len(unique_indices) > num_samples:
-                chosen = np.random.choice(len(unique_indices), num_samples, replace=False)
-                unique_indices = unique_indices[chosen]
     
         return unique_indices
     def filter_reachable_candidates(self, candidate_indices, candidate_xyz, reference_idx=None):
