@@ -6,6 +6,7 @@ import math
 from scipy.stats import mode
 from utils import *
 from scipy.spatial import cKDTree
+import time
 
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
@@ -552,7 +553,7 @@ class TomogramCoveragePlanner(object):
             if sampled_points_idx.shape[0] == 0:
                 break
             # ---------------------------------------------------------------
-    
+            TIME_START = time.time()
             rewards, best_angles, explored_cells = calculate_rewards(
                 sampled_points_idx,
                 self.elev_g,
@@ -563,7 +564,9 @@ class TomogramCoveragePlanner(object):
                 self.resolution,
                 self.cost_barrier
             )
-    
+            TIME_END = time.time()
+            print(f"Time taken for reward calculation: {1000*(TIME_END - TIME_START):.4f} milliseconds")
+            print(f"Number of candidate points: {sampled_points_idx.shape}")
             best_reward_index = np.argmax(rewards)
             best_reward = rewards[best_reward_index]
     
@@ -583,6 +586,8 @@ class TomogramCoveragePlanner(object):
             print(f"Best angle: {best_angle}, Percent of coverage: {np.nansum(self.explored) / target_num}")
             num += 1
             print(f"Number of candidate points: {num}")
+            TIME_END2 = time.time()
+            print(f"Time taken for this iteration: {1000*(TIME_END2 - TIME_START):.4f} milliseconds")
     
         return candidate_points_idx, candidate_points_angles, candidate_points_xyz
 

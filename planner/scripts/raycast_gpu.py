@@ -141,6 +141,25 @@ hash_grid = cp.zeros(tuple(grid_shape), dtype=cp.bool_)
 for idx in shifted_indices:
     hash_grid[tuple(idx)] = True
 
+def visualize_voxel_grid_with_visibility(voxel_grid, voxel_indices, all_visible_voxels):
+    """
+    Visualize the voxel grid as cubes, coloring visible voxels red and others gray.
+    """
+    voxel_size = voxel_grid.voxel_size
+    origin = voxel_grid.origin
+    geometries = []
+    for v in voxel_grid.get_voxels():
+        idx = tuple(v.grid_index)
+        center = voxel_grid.get_voxel_center_coordinate(v.grid_index)
+        cube = o3d.geometry.TriangleMesh.create_box(width=voxel_size, height=voxel_size, depth=voxel_size)
+        cube.translate(center - voxel_size / 2)
+        if idx in all_visible_voxels:
+            cube.paint_uniform_color([1.0, 0.0, 0.0])  # red
+        else:
+            cube.paint_uniform_color([0.5, 0.5, 0.5])  # gray
+        geometries.append(cube)
+    return geometries
+
 def visualize_rays_for_multiple_poses(camera_poses, orientations, rays_all, hits_all):
     ray_lines = []
     n_poses = len(camera_poses)
@@ -262,7 +281,6 @@ def raycast_multiple_poses_with_rewards(camera_poses, orientations):
     print(f"Reward calculation (CuPy unique) took: {t5 - t4:.4f} s")
 
     # For visualization
-    # (Optional: If you want to visualize rays, you can reconstruct them from idxs_out and min_idx)
     rays_all = idxs_out.get()  # Now you can use this for visualization
     hits_all = hit_flags.get()
 
@@ -282,15 +300,8 @@ for i, r in enumerate(rewards):
 
 # === Visualization of all rays for all poses in one window ===
 all_visible_voxels = set().union(*voxels_per_pose)
-vis_pcd = o3d.geometry.PointCloud()
-vis_pcd.points = o3d.utility.Vector3dVector(voxel_centers)
-colors = []
-for v in voxel_indices:
-    if tuple(v) in all_visible_voxels:
-        colors.append([1.0, 0.0, 0.0])  # red
-    else:
-        colors.append([0.5, 0.5, 0.5])  # gray
-vis_pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
 
+# Visualize as voxels (cubes) instead of points
+colored_voxel_cubes = visualize_voxel_grid_with_visibility(voxel_grid, voxel_indices, all_visible_voxels)
 ray_lines = visualize_rays_for_multiple_poses(camera_poses, orientations, rays_all, hits_all)
-o3d.visualization.draw_geometries([vis_pcd] + ray_lines)
+o3d.visualization.draw_geometries(colored_voxel_cubes + ray_lines)

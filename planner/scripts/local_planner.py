@@ -696,14 +696,15 @@ class LidarMappingNode:
         world_points = (indices + self.planner.min_idx + 0.5) * self.planner.voxel_size
     
         # Add these points to the tomograph (assuming your planner has such a method)
-        self.planner.add_obstacle_points(world_points)
+        self.planner.add_obstacle_points(world_points, voxel_list)
     
         rospy.loginfo(f"Added {len(world_points)} new obstacle points to tomograph.")
         self.tomo_update_flag = True
         return True
-    def select_best_reachable_candidate(self, prev_candidate_idx, center_idx, radius, num_samples=5):
+    def select_best_reachable_candidate(self, prev_candidate_idx, center_idx, current_remaining_candidate_idx, radius, num_samples=5):
         """
-        Sample candidate points around center_idx and select the best reachable one from prev_candidate_idx.
+        Sample candidate points around center_idx and select the best reachable one from prev_candidate_idx,
+        maximizing coverage of the target area visible from prev_candidate_idx.
     
         Args:
             prev_candidate_idx (np.ndarray): (s, x, y) grid index of previous candidate.
@@ -720,29 +721,50 @@ class LidarMappingNode:
             reachable_from=prev_candidate_idx,
             center_idx=center_idx,
             radius=radius
-        )
+        )  # sampled_indices: (N, 3)
     
         if sampled_indices.shape[0] == 0:
             rospy.logwarn("No valid sampled candidates found around center_idx.")
             return None
     
-        # Evaluate reachability and select the closest to center_idx
+        # The target voxels we want to maximize coverage for (from prev_candidate_idx)
+        target_voxels = self.target_voxels_candidates[self.next_candidate_xyz_idx + current_remaining_candidate_idx]
+    
         best_idx = None
+        best_angle = None
+        best_coverage = -1
         best_dist = float('inf')
+        candidate_angles = [0, 90, 180, 270]
+    
         for idx in sampled_indices:
             traj = self.planner.plan_with_idx_online(prev_candidate_idx, idx)
             if traj is not None and len(traj) > 1:
-                dist = np.linalg.norm(np.array(idx) - np.array(center_idx))
-                if dist < best_dist:
-                    best_dist = dist
-                    best_idx = idx
+                for angle in candidate_angles:
+                    # Simulate visibility from this candidate (idx, angle) using CuPy
+                    visible_voxels = self.planner.simulate_visibility(idx, angle)
+                    # Ensure both arrays are CuPy for fast logical operations
+                    if not isinstance(target_voxels, cp.ndarray):
+                        target_voxels_cp = cp.asarray(target_voxels)
+                    else:
+                        target_voxels_cp = target_voxels
+                    if not isinstance(visible_voxels, cp.ndarray):
+                        visible_voxels_cp = cp.asarray(visible_voxels)
+                    else:
+                        visible_voxels_cp = visible_voxels
+                    # Compute coverage: number of target voxels visible
+                    coverage = int(cp.sum(target_voxels_cp & visible_voxels_cp).get())
+                    dist = np.linalg.norm(np.array(idx) - np.array(center_idx))
+                    # Prefer higher coverage, then closer to center
+                    if coverage > best_coverage or (coverage == best_coverage and dist < best_dist):
+                        best_coverage = coverage
+                        best_idx = idx
+                        best_angle = angle
     
         if best_idx is None:
             rospy.logwarn("No reachable candidate found from previous candidate.")
             return None
     
-        return np.array(best_idx, dtype=np.int32)
-    
+        return np.array(best_idx, dtype=np.int32), best_angle
     def replan_global_path(self, event):
         if self.next_candidate_xyz_idx < len(self.candidate_points_xyz) - 1 and self.tomo_update_flag:
             rospy.loginfo("replan_global_path timer fired")
@@ -752,6 +774,7 @@ class LidarMappingNode:
             self.candidate_points_xyz = self.candidate_points_xyz[self.next_candidate_xyz_idx:]
             self.candidate_points_angles = self.candidate_points_angles[self.next_candidate_xyz_idx:]
             self.candidate_points_idx = self.candidate_points_idx[self.next_candidate_xyz_idx:]
+            self.target_voxels_candidates = self.target_voxels_candidates[self.next_candidate_xyz_idx:]
             self.next_candidate_xyz_idx = 0
             if remaining_candidates.ndim == 1:
                 if remaining_candidates.size % 3 != 0 or remaining_candidates.size == 0:
@@ -770,9 +793,9 @@ class LidarMappingNode:
                 if self.planner.trav[start_pos[0], start_pos[1], start_pos[2]] > 15:
                     rospy.logwarn(f"Start candidate {i} not traversable, searching for replacement...")
                     t_select_start = time.time()
-                    best_idx = self.select_best_reachable_candidate(
+                    best_idx,best_angle = self.select_best_reachable_candidate(
                         prev_candidate_idx=remaining_candidates[i-1] if i > 0 else start_pos,
-                        center_idx=start_pos,
+                        center_idx=start_pos, current_remaining_candidate_idx=i,
                         radius=2.0,
                         num_samples=5
                     )
@@ -781,18 +804,22 @@ class LidarMappingNode:
                     if best_idx is not None:
                         self.candidate_points_idx[self.next_candidate_xyz_idx + i] = best_idx
                         remaining_candidates[i] = best_idx
+                        self.candidate_points_angles[self.next_candidate_xyz_idx + i] = best_angle
                     else:
                         rospy.logwarn(f"No reachable replacement found for start candidate {i}, removing.")
                         self.candidate_points_idx = np.delete(self.candidate_points_idx, self.next_candidate_xyz_idx + i, axis=0)
                         remaining_candidates = np.delete(remaining_candidates, i, axis=0)
+                        self.candidate_points_angles = np.delete(self.candidate_points_angles, self.next_candidate_xyz_idx + i, axis=0)
+                        self.target_voxels_candidates = np.delete(self.target_voxels_candidates, self.next_candidate_xyz_idx + i, axis=0)
+                        self.candidate_points_xyz = np.delete(self.candidate_points_xyz, self.next_candidate_xyz_idx + i, axis=0)
                         continue
     
                 if self.planner.trav[end_pos[0], end_pos[1], end_pos[2]] > 15:
                     rospy.logwarn(f"End candidate {i+1} not traversable, searching for replacement...")
                     t_select_start = time.time()
-                    best_idx = self.select_best_reachable_candidate(
+                    best_idx,best_angle = self.select_best_reachable_candidate(
                         prev_candidate_idx=start_pos,
-                        center_idx=end_pos,
+                        center_idx=end_pos, current_remaining_candidate_idx=i+1,
                         radius=2.0,
                         num_samples=5
                     )
@@ -801,10 +828,14 @@ class LidarMappingNode:
                     if best_idx is not None:
                         self.candidate_points_idx[self.next_candidate_xyz_idx + i + 1] = best_idx
                         remaining_candidates[i + 1] = best_idx
+                        self.candidate_points_angles[self.next_candidate_xyz_idx + i + 1] = best_angle
                     else:
                         rospy.logwarn(f"No reachable replacement found for end candidate {i+1}, removing.")
                         self.candidate_points_idx = np.delete(self.candidate_points_idx, self.next_candidate_xyz_idx + i + 1, axis=0)
                         remaining_candidates = np.delete(remaining_candidates, i + 1, axis=0)
+                        self.candidate_points_angles = np.delete(self.candidate_points_angles, self.next_candidate_xyz_idx + i + 1, axis=0)
+                        self.target_voxels_candidates = np.delete(self.target_voxels_candidates, self.next_candidate_xyz_idx + i + 1, axis=0)
+                        self.candidate_points_xyz = np.delete(self.candidate_points_xyz, self.next_candidate_xyz_idx + i + 1, axis=0)
                         continue
     
             t_candidates_checked = time.time()

@@ -207,7 +207,7 @@ class TomogramCoveragePlanner(object):
         self.hash_grid = cp.zeros(tuple(self.grid_shape), dtype=cp.bool_)
         for idx in shifted_indices:
             self.hash_grid[tuple(idx)] = True
-        # self.hash_grid_online = self.hash_grid.copy()
+        self.hash_grid_online = self.hash_grid.copy()
 
         # Initialize explored voxels
         self.explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
@@ -318,8 +318,8 @@ class TomogramCoveragePlanner(object):
             trav_gy.reshape(-1, trav_gy.shape[-1]).astype(np.double),
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
-    
-    def add_obstacle_points(self, world_points, z_buffer=0.5, xy_buffer=0.3):
+
+    def add_obstacle_points(self, world_points, added_voxels, z_buffer=0.5, xy_buffer=0.3):
         """
         Add new obstacle points to the tomograph by marking all provided points as untraversable.
     
@@ -350,6 +350,9 @@ class TomogramCoveragePlanner(object):
                     self.trav[ds, y_min:y_max, x_min:x_max] = self.cost_barrier  # Mark as untraversable
     
         self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
+        if len(added_voxels) > 0:
+            idxs = cp.array(added_voxels, dtype=cp.int32)
+            self.hash_grid_online[idxs[:, 0], idxs[:, 1], idxs[:, 2]] = True
 
         
     # def compute_adjacency_matrix(self, sampled_points_idx):
@@ -964,7 +967,45 @@ class TomogramCoveragePlanner(object):
             explored_voxels_max = cp.logical_and(explored_voxels_max, self.hash_grid)
     
         return explored_voxels_max, explored_voxels_candidate
-
+    def simulate_visibility(self, idx, angle, fov_vert=None, fov_hor=None, sensor_range=None, n_rays=30):
+        """
+        Simulate visibility from a candidate grid index and angle.
+        Returns a CuPy boolean mask (same shape as self.hash_grid) of visible voxels.
+        Uses the batched_ray_reward function for better performance.
+        """
+        if fov_vert is None:
+            fov_vert = self.fov_vert
+        if fov_hor is None:
+            fov_hor = self.fov_hor
+        if sensor_range is None:
+            sensor_range = self.sensor_range
+    
+        # Convert grid idx to world coordinates
+        candidate_pose = self.idx2pos_3D(idx)
+        # batched_ray_reward expects arrays of poses and angles
+        poses = np.array([candidate_pose])
+        angles = np.array([angle])
+    
+        # Use the batched_ray_reward function for efficient GPU raycasting
+        _, visibles = self.batched_ray_reward(poses, angles)
+        visible = visibles[0]  # Only one pose
+    
+        # Convert to CuPy array for fast masking
+        if len(visible) == 0:
+            return cp.zeros(self.hash_grid.shape, dtype=cp.bool_)
+    
+        visible_arr = cp.array(list(visible))  # shape (N, 3), global indices
+        local_idx = visible_arr - cp.asarray(self.min_idx)  # convert to local grid
+    
+        # Filter out-of-bounds indices
+        valid = cp.all((local_idx >= 0) & (local_idx < cp.asarray(self.hash_grid.shape)), axis=1)
+        local_idx = local_idx[valid]
+    
+        # Build mask
+        mask = cp.zeros(self.hash_grid.shape, dtype=cp.bool_)
+        if local_idx.shape[0] > 0:
+            mask[local_idx[:, 0], local_idx[:, 1], local_idx[:, 2]] = True
+        return mask
     def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles, use_dilation=False):
         """
         Compute the explored voxels from candidate viewpoints using raycasting and visualize them.
