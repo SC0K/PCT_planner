@@ -174,7 +174,7 @@ class TomogramCoveragePlanner(object):
         self.trav = None
         self.explored = None
         self.sensor_range = self.cfg.sensor.sensor_range
-        self.sensor_range_analysis = 4.5
+        self.sensor_range_analysis = 10
         self.sensor_fov = self.cfg.sensor.sensor_fov
         self.layer_modes = None
         self.fov_vert = 90
@@ -610,8 +610,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(1, int(1 / self.resolution))  # Step size in the x dimension
-        step_y = max(1, int(1 / self.resolution))  # Step size in the y dimension
+        step_x = max(1, int(0.5 / self.resolution))  # Step size in the x dimension
+        step_y = max(1, int(0.5 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -1018,7 +1018,7 @@ class TomogramCoveragePlanner(object):
         import cupyx.scipy.ndimage as cp_ndimage
     
         # Initialize voxel grid to track which voxels have been explored
-        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.6])
+        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])
         explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
     
         # Iterate through each candidate pose and perform raycasting
@@ -1032,7 +1032,7 @@ class TomogramCoveragePlanner(object):
             # Perform raycasting
             visible = get_visible_voxels_first_hit(
                 candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
-                self.hash_grid, self.fov_vert, self.fov_hor+10, self.sensor_range_analysis,
+                self.hash_grid, self.fov_vert, self.fov_hor, self.sensor_range_analysis,
                 self.resolution_raycast, n_rays=50
             )
     
@@ -1080,7 +1080,7 @@ class TomogramCoveragePlanner(object):
         fov_deg = self.sensor_fov
         max_range = self.sensor_range
         resolution = self.resolution_raycast
-        n_rays = 10
+        n_rays = 30
 
         n = len(candidate_poses)
         n_steps = int(max_range / resolution)
@@ -1106,8 +1106,8 @@ class TomogramCoveragePlanner(object):
                 np.int32(n_rays),
                 np.int32(n_steps),
                 np.float64(fov_deg),
-                np.float64(-45),  # el_min_deg
-                np.float64(3),    # el_max_deg
+                np.float64(-60),  # el_min_deg
+                np.float64(60),    # el_max_deg
                 np.float64(max_range),
                 np.float64(resolution),
                 np.float64(self.voxel_size),
@@ -1169,12 +1169,109 @@ class TomogramCoveragePlanner(object):
 
         # print(f"[batched_ray_reward] n={n} setup={t1-t0:.4f}s raycast={t2-t1:.4f}s post={t4-t3:.4f}s total={t4-t0:.4f}s")
         return rewards, visible_voxels_list
+def batched_ray_reward_online(self, candidate_poses, orientations_deg):
+        """
+        Compute the number of new (unexplored) voxels seen from each candidate pose and orientation.
+        Uses a custom CUDA kernel for ray prep.
+        """
+        fov_deg = self.sensor_fov
+        max_range = self.sensor_range
+        resolution = self.resolution_raycast
+        n_rays = 30
+
+        n = len(candidate_poses)
+        n_steps = int(max_range / resolution)
+        # t0 = time.time()
+
+        # Prepare input arrays
+        poses_gpu = cp.asarray(candidate_poses, dtype=cp.float64)
+        yaws_gpu = cp.asarray(np.array(orientations_deg, dtype=np.float64))
+        min_idx_gpu = cp.asarray(self.min_idx, dtype=cp.int32)
+        grid_shape_gpu = cp.asarray(self.grid_shape, dtype=cp.int32)
+
+        # Prepare output arrays
+        idxs_out = cp.zeros((n, n_rays * n_rays, n_steps, 3), dtype=cp.int32)
+        valid_out = cp.zeros((n, n_rays * n_rays, n_steps), dtype=cp.bool_)
+
+        # Launch the ray prep kernel
+        ray_prep_kernel(
+            (n,), (n_rays * n_rays,),
+            (
+                poses_gpu,
+                yaws_gpu,
+                np.int32(n),
+                np.int32(n_rays),
+                np.int32(n_steps),
+                np.float64(fov_deg),
+                np.float64(-60),  # el_min_deg
+                np.float64(60),    # el_max_deg
+                np.float64(max_range),
+                np.float64(resolution),
+                np.float64(self.voxel_size),
+                min_idx_gpu,
+                grid_shape_gpu,
+                idxs_out,
+                valid_out
+            )
+        )
+        cp.cuda.Device().synchronize()
+        # t1 = time.time()
+
+        # Flatten for raycast kernel
+        idxs_flat = idxs_out.reshape(-1, 3).ravel()
+        valid_flat = valid_out.ravel()
+        hash_flat = self.hash_grid_online.ravel()
+        n_total_rays = idxs_out.shape[0] * idxs_out.shape[1]
+        n_steps = idxs_out.shape[2]
+
+        visible_hits = cp.full((n_total_rays, 3), -1, dtype=cp.int32)
+        hit_flags = cp.zeros((n_total_rays,), dtype=cp.int32)
+
+        # Raycast kernel
+        grid = (n_total_rays + 255) // 256
+        block = 256
+        ray_first_hit_kernel(
+            (grid,), (block,),
+            (
+                idxs_flat,
+                valid_flat,
+                hash_flat,
+                cp.int32(n_total_rays),
+                cp.int32(n_steps),
+                cp.int32(self.grid_shape[0]), cp.int32(self.grid_shape[1]), cp.int32(self.grid_shape[2]),
+                visible_hits.ravel(),
+                hit_flags
+            )
+        )
+        cp.cuda.Device().synchronize()
+        # t2 = time.time()
+
+        visible_hits_np = visible_hits.get().reshape(n, -1, 3)
+        hit_flags_np = hit_flags.get().reshape(n, -1)
+        explored = cp.asnumpy(self.explored_voxels)
+        min_idx_np = np.array(self.min_idx, dtype=np.int32)
+
+        # Fast C++ post-processing
+        # t3 = time.time()
+        rewards, visible_voxels_list = reward_cpp.batched_reward(
+            visible_hits_np, hit_flags_np, explored, min_idx_np
+        )
+        # t4 = time.time()
+
+        # try:
+        #     with open("batched_ray_reward_profile.csv", "a") as f:
+        #         f.write(f"{n},{t1-t0:.6f},{t2-t1:.6f},{t4-t3:.6f},{t4-t0:.6f}\n")
+        # except Exception as e:
+        #     print(f"Failed to write timing log: {e}")
+
+        # print(f"[batched_ray_reward] n={n} setup={t1-t0:.4f}s raycast={t2-t1:.4f}s post={t4-t3:.4f}s total={t4-t0:.4f}s")
+        return rewards, visible_voxels_list
 
 def get_visible_voxels_first_hit(candidate_pose, orientation, voxel_size, min_idx, grid_shape, hash_grid,
                                  fov_deg_ver=90, fov_deg_hor=90, max_range=4.0, resolution=0.2, n_rays=30):
     # Compute azimuth and elevation angles
     az = cp.linspace(-fov_deg_hor / 2, fov_deg_hor / 2, n_rays)
-    el = cp.linspace(-45, 0, n_rays)
+    el = cp.linspace(-60, 60, n_rays)
     az_grid, el_grid = cp.meshgrid(az, el)
     az_flat = cp.radians(az_grid.flatten())
     el_flat = cp.radians(el_grid.flatten())

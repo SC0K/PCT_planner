@@ -345,11 +345,16 @@ class TomogramCoveragePlanner(object):
                 return True
 
             # Initial sample
-            first_sample = np.random.uniform([0, 0], [width, height])
-            samples.append(first_sample)
-            gi, gj = get_cell(first_sample)
-            grid[gi, gj] = 0
-            active_list.append(0)
+            grid_spacing = r / np.sqrt(2)
+            x_coords = np.arange(grid_spacing / 2, width, grid_spacing)
+            y_coords = np.arange(grid_spacing / 2, height, grid_spacing)
+            for x in x_coords:
+                for y in y_coords:
+                    sample = np.array([x, y])
+                    samples.append(sample)
+                    gi, gj = get_cell(sample)
+                    grid[gi, gj] = len(samples) - 1
+                    active_list.append(len(samples) - 1)
 
             while active_list:
                 idx = np.random.choice(active_list)
@@ -376,7 +381,7 @@ class TomogramCoveragePlanner(object):
         xy_min = xy_coords.min(axis=0)
         xy_max = xy_coords.max(axis=0)
         width, height = xy_max - xy_min
-        poisson_samples = bridson_sampling(width, height, r=1.5)
+        poisson_samples = bridson_sampling(width, height, r=2,k=10)
         poisson_samples += xy_min
 
         # Use k-d tree to snap Poisson samples to closest traversable locations

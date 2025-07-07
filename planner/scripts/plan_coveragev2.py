@@ -29,6 +29,7 @@ if args.scene == 'Spiral':
 elif args.scene == 'Building':
     # tomo_file = 'building2_9'
     tomo_file = 'experiments/2F_2*1'
+    # tomo_file = 'experiments/Becker_office_eval'
     # tomo_file = 'building_LEE_1F'
     # tomo_file = 'ETH_HPH'
     start_pos = np.array([5.0, 4.0, 5], dtype=np.float32)
@@ -117,7 +118,7 @@ def pct_plan():
     adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
     time_enda = time.time()
     print("Candidate points:", candidate_points_xyz.shape)
-    # print(f"Adjacency matrix computed in {time_enda - time_starta:.2f} seconds")
+    print(f"Adjacency matrix computed in {time_enda - time_starta:.2f} seconds")
     np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
@@ -178,7 +179,7 @@ def pct_plan():
     path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
-    explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
+    explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, False)
     publish_points(updated_sampled_points_xyz)
     area = compute_covered_area(explored_cells, planner.resolution_raycast)
     print(f"Covered Area: {area:.2f} m^2")

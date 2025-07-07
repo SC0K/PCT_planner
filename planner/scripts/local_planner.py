@@ -715,7 +715,6 @@ class LidarMappingNode:
         Returns:
             np.ndarray: (s, x, y) grid index of the best reachable candidate, or None if none found.
         """
-        # Sample candidate points in the region
         sampled_indices = self.planner.sampleUniformPointsInSpaceOnline(
             num_samples=num_samples,
             reachable_from=prev_candidate_idx,
@@ -727,38 +726,57 @@ class LidarMappingNode:
             rospy.logwarn("No valid sampled candidates found around center_idx.")
             return None
     
-        # The target voxels we want to maximize coverage for (from prev_candidate_idx)
         target_voxels = self.target_voxels_candidates[self.next_candidate_xyz_idx + current_remaining_candidate_idx]
-    
-        best_idx = None
-        best_angle = None
-        best_coverage = -1
-        best_dist = float('inf')
         candidate_angles = [0, 90, 180, 270]
     
+        # Collect all reachable (idx, angle) pairs
+        candidate_pairs = []
+        candidate_poses = []
+        candidate_yaws = []
+        candidate_idxs = []
         for idx in sampled_indices:
             traj = self.planner.plan_with_idx_online(prev_candidate_idx, idx)
             if traj is not None and len(traj) > 1:
                 for angle in candidate_angles:
-                    # Simulate visibility from this candidate (idx, angle) using CuPy
-                    visible_voxels = self.planner.simulate_visibility(idx, angle)
-                    # Ensure both arrays are CuPy for fast logical operations
-                    if not isinstance(target_voxels, cp.ndarray):
-                        target_voxels_cp = cp.asarray(target_voxels)
-                    else:
-                        target_voxels_cp = target_voxels
-                    if not isinstance(visible_voxels, cp.ndarray):
-                        visible_voxels_cp = cp.asarray(visible_voxels)
-                    else:
-                        visible_voxels_cp = visible_voxels
-                    # Compute coverage: number of target voxels visible
-                    coverage = int(cp.sum(target_voxels_cp & visible_voxels_cp).get())
-                    dist = np.linalg.norm(np.array(idx) - np.array(center_idx))
-                    # Prefer higher coverage, then closer to center
-                    if coverage > best_coverage or (coverage == best_coverage and dist < best_dist):
-                        best_coverage = coverage
-                        best_idx = idx
-                        best_angle = angle
+                    candidate_pairs.append((idx, angle))
+                    candidate_poses.append(self.planner.idx2pos_3D(idx))
+                    candidate_yaws.append(angle)
+                    candidate_idxs.append(idx)
+    
+        if len(candidate_poses) == 0:
+            rospy.logwarn("No reachable candidate viewpoints found.")
+            return None
+    
+        # Use batched_ray_reward for all candidates at once
+        candidate_poses = np.array(candidate_poses) + np.array([0,0,0.5])
+        rewards, visible_voxels_list = self.planner.batched_ray_reward_online(np.array(candidate_poses), np.array(candidate_yaws))
+    
+        # Find the best candidate by maximizing coverage of target_voxels
+        best_idx = None
+        best_angle = None
+        best_coverage = -1
+        best_dist = float('inf')
+    
+        for i, (idx, angle) in enumerate(candidate_pairs):
+            visible_voxels = visible_voxels_list[i]
+            if len(visible_voxels) == 0:
+                coverage = 0
+            else:
+                visible_voxels_cp = cp.zeros_like(target_voxels, dtype=cp.bool_)
+                for v in visible_voxels:
+                    local_idx = tuple(np.array(v) - self.planner.min_idx)
+                    if all(0 <= local_idx[d] < target_voxels.shape[d] for d in range(3)):
+                        visible_voxels_cp[local_idx] = True
+                if not isinstance(target_voxels, cp.ndarray):
+                    target_voxels_cp = cp.asarray(target_voxels)
+                else:
+                    target_voxels_cp = target_voxels
+                coverage = int(cp.sum(target_voxels_cp & visible_voxels_cp).get())
+            dist = np.linalg.norm(np.array(idx) - np.array(center_idx))
+            if coverage > best_coverage or (coverage == best_coverage and dist < best_dist):
+                best_coverage = coverage
+                best_idx = idx
+                best_angle = angle
     
         if best_idx is None:
             rospy.logwarn("No reachable candidate found from previous candidate.")
@@ -800,7 +818,7 @@ class LidarMappingNode:
                         num_samples=5
                     )
                     t_select_end = time.time()
-                    rospy.loginfo(f"Time to select replacement for start candidate {i}: {t_select_end - t_select_start:.3f} s")
+                    rospy.loginfo(f"Time to select replacement for start candidate {i}: {t_select_end - t_select_start} s")
                     if best_idx is not None:
                         self.candidate_points_idx[self.next_candidate_xyz_idx + i] = best_idx
                         remaining_candidates[i] = best_idx
@@ -824,7 +842,7 @@ class LidarMappingNode:
                         num_samples=5
                     )
                     t_select_end = time.time()
-                    rospy.loginfo(f"Time to select replacement for end candidate {i+1}: {t_select_end - t_select_start:.3f} s")
+                    rospy.loginfo(f"Time to select replacement for end candidate {i+1}: {t_select_end - t_select_start} s")
                     if best_idx is not None:
                         self.candidate_points_idx[self.next_candidate_xyz_idx + i + 1] = best_idx
                         remaining_candidates[i + 1] = best_idx
@@ -839,7 +857,7 @@ class LidarMappingNode:
                         continue
     
             t_candidates_checked = time.time()
-            rospy.loginfo(f"Time for candidate traversability check and replacement: {t_candidates_checked - t_check_candidates:.3f} s")
+            rospy.loginfo(f"Time for candidate traversability check and replacement: {t_candidates_checked - t_check_candidates:} s")
     
             remaining_candidates = self.candidate_points_idx[self.next_candidate_xyz_idx:]
             remaining_candidates_xyz = self.candidate_points_xyz[self.next_candidate_xyz_idx:]
