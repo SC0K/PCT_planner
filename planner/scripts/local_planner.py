@@ -90,6 +90,7 @@ class LidarMappingNode:
         
         self.next_candidate_xyz_idx = 0
         self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, self.candidate_points_angles)
+        self.target_voxels = cp.array(self.target_voxels, dtype=cp.bool_)
         self.scanned_voxels = cp.zeros_like(self.target_voxels, dtype=cp.bool_)
 
         self.target_voxels_pc_pub = rospy.Publisher("target_voxels_pc", PointCloud2, queue_size=10)
@@ -228,19 +229,12 @@ class LidarMappingNode:
         idx = np.argmin(dists)
         target_cp = critical_points_xyz[idx]
     
-        # Publish the critical point as the goal (use robot's current z for safety)
-        goal_msg = PoseStamped()
-        goal_msg.header.stamp = rospy.Time.now()
-        goal_msg.header.frame_id = "map"
-        goal_msg.pose.position.x = target_cp[0]
-        goal_msg.pose.position.y = target_cp[1]
-        goal_msg.pose.position.z = robot_pos[2]
+        
         # Optionally, face the critical point
         direction = target_cp[:2] - robot_pos[:2]
         yaw = math.atan2(direction[1], direction[0])
         orientation = tf_trans.quaternion_from_euler(0, 0, yaw)
-        goal_msg.pose.orientation = Quaternion(*orientation)
-        self.goal_pub.publish(goal_msg)
+        
     
         # --- Select local patch of projected added voxels around the critical point ---
         cp_idx = self.critical_points[idx]
@@ -435,9 +429,6 @@ class LidarMappingNode:
             target = self.target_voxels.get()
             remaining_target = target & ~scanned
             projected_list_buffer = list(projected_hash_voxels_buffer)
-            # Use all added voxels for the projected set
-            
-            # 2x2 region directions: (x, y) offsets for each region
             region_offsets = [
                 [ (1, 0), (0, 1), (1, 1)],      # +x, +y
                 [ (1, 0), (0, -1), (1, -1)],    # +x, -y
@@ -580,7 +571,6 @@ class LidarMappingNode:
         
         shift_distance = 1.5  
         
-        # ... after computing normal_xy as before ...
         if abs(normal[2]) > 0.7:
             # Ground/ceiling: use original candidate angle
             angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
@@ -917,6 +907,7 @@ class LidarMappingNode:
             self.global_path = np.array(full_trajectory)
             self.current_waypoint_idx = 0
             self.tomo_update_flag = False
+            self.target_voxels_candidates = self.planner.recompute_visible_voxels_online(self.candidate_path_idx, self.candidate_points_angles)
     def publishTomogram(self, elev_g, trav):
         header = Header()
         header.seq = 0

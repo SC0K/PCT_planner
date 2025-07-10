@@ -149,11 +149,12 @@ def visualize_voxel_grid_with_visibility(voxel_grid, voxel_indices, all_visible_
     origin = voxel_grid.origin
     geometries = []
     for v in voxel_grid.get_voxels():
-        idx = tuple(v.grid_index)
+        idx = np.floor(voxel_grid.get_voxel_center_coordinate(v.grid_index) / voxel_size).astype(int)
+        idx_tuple = tuple(idx)
         center = voxel_grid.get_voxel_center_coordinate(v.grid_index)
         cube = o3d.geometry.TriangleMesh.create_box(width=voxel_size, height=voxel_size, depth=voxel_size)
         cube.translate(center - voxel_size / 2)
-        if idx in all_visible_voxels:
+        if idx_tuple in all_visible_voxels:
             cube.paint_uniform_color([1.0, 0.0, 0.0])  # red
         else:
             cube.paint_uniform_color([0.5, 0.5, 0.5])  # gray
@@ -288,7 +289,7 @@ def raycast_multiple_poses_with_rewards(camera_poses, orientations):
 
 # === Example usage ===
 camera_poses = np.array([
-    [5, 2.0, 0.6],[0, 0.0, 0.6],[0, 0.0, 0.6],[0, 0.0, 0.6],[0, 0.0, 0.6],[0, 0.0, 0.6],[0, 0.0, 0.6],[0, 0.0, 0.6]
+    [0, 0.0, 0.6]
 ])
 orientations = [np.eye(3) for _ in range(len(camera_poses))]
 

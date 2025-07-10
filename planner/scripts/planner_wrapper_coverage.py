@@ -7,6 +7,9 @@ from scipy.stats import mode
 from utils import *
 from scipy.spatial import cKDTree
 import time
+import open3d as o3d
+import csv
+
 
 sys.path.append('../')
 from lib import a_star, ele_planner, traj_opt
@@ -162,36 +165,18 @@ class TomogramCoveragePlanner(object):
     def compute_adjacency_matrix(self, sampled_points_idx):
         """
         Compute an adjacency matrix where each entry represents the path length between two sampled points.
-    
         Args:
-            sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3).
-    
+            sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3), (s, x, y).
         Returns:
             np.ndarray: Adjacency matrix of size N x N with path lengths.
         """
-        num_points = sampled_points_idx.shape[0]
-        adj_matrix = np.full((num_points, num_points), np.inf, dtype=np.float32)  # Initialize with infinity
-    
-        for i in range(num_points):
-            for j in range(i + 1, num_points):  # Only compute for upper triangle (symmetry)
-                # self.initPlanner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
-                self.init_planner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
-                # Plan a path between the two points
-                print("Planning path between points:", sampled_points_idx[i], sampled_points_idx[j])
-                # self.planner.plan(sampled_points_idx[i], sampled_points_idx[j], True)
-                # Swap x and y for planning
-                start_idx = np.array([sampled_points_idx[i][0], sampled_points_idx[i][2], sampled_points_idx[i][1]], dtype=np.int32)
-                end_idx = np.array([sampled_points_idx[j][0], sampled_points_idx[j][2], sampled_points_idx[j][1]], dtype=np.int32)
-                self.planner.plan(start_idx, end_idx, False)
-                path_finder: a_star.Astar = self.planner.get_path_finder()
-                path = path_finder.get_result_matrix()
-    
-                if len(path) > 0:  # If a valid path exists
-                    path_length = len(path)  # Use the number of steps as the path length
-                    adj_matrix[i, j] = path_length
-                    adj_matrix[j, i] = path_length  # Symmetry for undirected graph
-    
-        return adj_matrix
+        # Flip x and y: (s, x, y) -> (s, y, x)
+        sampled_points_flipped = sampled_points_idx.copy()
+        sampled_points_flipped[:, 1], sampled_points_flipped[:, 2] = (
+            sampled_points_flipped[:, 2], sampled_points_flipped[:, 1].copy()
+        )
+        sampled_points_o3d = o3d.utility.Vector3iVector(sampled_points_flipped.astype(np.int32))
+        return self.planner.compute_adjacency_matrix(sampled_points_o3d)
         
     def plan_with_idx(self, start_pos, end_pos):
         # self.start_idx[1:] = self.pos2idx(start_pos)
@@ -537,17 +522,23 @@ class TomogramCoveragePlanner(object):
         candidate_points_xyz = np.empty((0, 3), dtype=np.float32)
         candidate_points_angles = np.empty((0,), dtype=np.float32)
         num = 0
-    
+
+        # Prepare CSV file for timing logs
+        timing_csv = os.path.join(self.tomo_dir, "cpu_reward_profile.csv")
+        if not os.path.exists(timing_csv):
+            with open(timing_csv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["iteration", "n_candidates", "reward_time_ms", "total_time_ms"])
+
         while not finished:
             print("Explored cells:", np.nansum(self.explored))
             if np.nansum(self.explored) >= self.cfg.planner.coverage_threshold * target_num:
                 break
-    
+
             # --- Filter out candidates that are already in explored regions ---
             mask = []
             for idx in range(sampled_points_idx.shape[0]):
                 s, x, y = sampled_points_idx[idx]
-                # Only keep if at least one layer at (x, y) is unexplored
                 if np.any(self.explored[:, x, y] == 0):
                     mask.append(True)
                 else:
@@ -570,18 +561,20 @@ class TomogramCoveragePlanner(object):
                 self.cost_barrier
             )
             TIME_END = time.time()
-            print(f"Time taken for reward calculation: {1000*(TIME_END - TIME_START):.4f} milliseconds")
+            reward_time_ms = (TIME_END - TIME_START) * 1000
+
+            print(f"Time taken for reward calculation: {reward_time_ms:.4f} milliseconds")
             print(f"Number of candidate points: {sampled_points_idx.shape}")
             best_reward_index = np.argmax(rewards)
             best_reward = rewards[best_reward_index]
-    
+
             if best_reward < min_reward:
                 finished = True
                 break
-    
+
             best_angle = best_angles[best_reward_index]
             best_explored_cells = explored_cells[best_reward_index]
-    
+
             self.explored = best_explored_cells
             candidate_points_idx = np.vstack((candidate_points_idx, sampled_points_idx[best_reward_index]))
             candidate_points_xyz = np.vstack((candidate_points_xyz, sampled_points_xyz[best_reward_index]))
@@ -590,11 +583,19 @@ class TomogramCoveragePlanner(object):
             sampled_points_xyz = np.delete(sampled_points_xyz, best_reward_index, axis=0)
             print(f"Best angle: {best_angle}, Percent of coverage: {np.nansum(self.explored) / target_num}")
             num += 1
-            print(f"Number of candidate points: {num}")
             TIME_END2 = time.time()
-            print(f"Time taken for this iteration: {1000*(TIME_END2 - TIME_START):.4f} milliseconds")
-    
+            total_time_ms = (TIME_END2 - TIME_START) * 1000
+            print(f"Time taken for this iteration: {total_time_ms:.4f} milliseconds")
+
+            try:
+                with open(timing_csv, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([num, sampled_points_idx.shape[0], reward_time_ms, total_time_ms])
+            except Exception as e:
+                print(f"Failed to write timing log: {e}")
+
         return candidate_points_idx, candidate_points_angles, candidate_points_xyz
+                                 
 
 from numba import njit, prange
 

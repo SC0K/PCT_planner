@@ -610,8 +610,8 @@ class TomogramCoveragePlanner(object):
             np.ndarray: Array of valid sampled points (s, x, y indices).
             np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
         """
-        step_x = max(1, int(0.5 / self.resolution))  # Step size in the x dimension
-        step_y = max(1, int(0.5 / self.resolution))  # Step size in the y dimension
+        step_x = max(1, int(1.05 / self.resolution))  # Step size in the x dimension
+        step_y = max(1, int(1.05 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
@@ -846,8 +846,8 @@ class TomogramCoveragePlanner(object):
 
         sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
         # sampled_points_idx, sampled_points_xyz = self.filter_reachable_candidates(sampled_points_xyz_raw, sampled_points_idx_raw)
-        # sampled_points_xyz = sampled_points_xyz[:1]
-        # sampled_points_idx = sampled_points_idx[:1]
+        # sampled_points_xyz = sampled_points_xyz[:5]
+        # sampled_points_idx = sampled_points_idx[:5]
         sampled_points_xyz = sampled_points_xyz + np.array([0, 0, 0.6])  # camera height offset
 
         yaw_angles = [0, 90, 180, 270]
@@ -898,7 +898,7 @@ class TomogramCoveragePlanner(object):
                 new_voxel_array[v_cp[:, 0], v_cp[:, 1], v_cp[:, 2]] = True
 
             # Dilation to fill FOV gaps
-            struct = cp.ones((3, 3, 1), dtype=cp.bool_)  # x×y×z 
+            struct = cp.ones((2, 2, 1), dtype=cp.bool_)  # x×y×z 
             dilated = cp_ndimage.binary_dilation(new_voxel_array, structure=struct)
             dilated = cp_ndimage.binary_dilation(dilated, structure=struct)
 
@@ -916,7 +916,28 @@ class TomogramCoveragePlanner(object):
 
         return best_idxs, best_angles, np.array(best_xyz) - np.array([0, 0, 0.6])
 
-
+    def recompute_visible_voxels_online(self, candidate_points_xyz, angles_deg):
+        """
+        Given arrays of candidate poses and their yaw angles (degrees),
+        recompute the visible voxels for each pose using GPU raycasting.
+    
+        Args:
+            candidate_points_xyz (np.ndarray): (N, 3) array of candidate poses in world coordinates.
+            angles_deg (np.ndarray): (N,) array of yaw angles in degrees.
+    
+        Returns:
+            visible_voxels_list (list of sets): Each entry is a set of (x, y, z) global indices visible from that pose.
+        """
+        # Ensure input shapes
+        candidate_points_xyz = np.asarray(candidate_points_xyz)
+        angles_deg = np.asarray(angles_deg)
+        assert candidate_points_xyz.shape[0] == angles_deg.shape[0], "Number of poses and angles must match"
+    
+        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])
+    
+        # Use the same batched ray reward function (no reward calculation, just visible voxels)
+        _, visible_voxels_list = self.batched_ray_reward(candidate_points_xyz, angles_deg)
+        return visible_voxels_list
 
     def compute_explored_voxels(self, candidate_points_xyz, angles, use_dilation=True):
         """
@@ -1106,8 +1127,8 @@ class TomogramCoveragePlanner(object):
                 np.int32(n_rays),
                 np.int32(n_steps),
                 np.float64(fov_deg),
-                np.float64(-60),  # el_min_deg
-                np.float64(60),    # el_max_deg
+                np.float64(-45),  # el_min_deg
+                np.float64(4),    # el_max_deg
                 np.float64(max_range),
                 np.float64(resolution),
                 np.float64(self.voxel_size),
@@ -1169,7 +1190,7 @@ class TomogramCoveragePlanner(object):
 
         # print(f"[batched_ray_reward] n={n} setup={t1-t0:.4f}s raycast={t2-t1:.4f}s post={t4-t3:.4f}s total={t4-t0:.4f}s")
         return rewards, visible_voxels_list
-def batched_ray_reward_online(self, candidate_poses, orientations_deg):
+    def batched_ray_reward_online(self, candidate_poses, orientations_deg):
         """
         Compute the number of new (unexplored) voxels seen from each candidate pose and orientation.
         Uses a custom CUDA kernel for ray prep.
@@ -1203,8 +1224,8 @@ def batched_ray_reward_online(self, candidate_poses, orientations_deg):
                 np.int32(n_rays),
                 np.int32(n_steps),
                 np.float64(fov_deg),
-                np.float64(-60),  # el_min_deg
-                np.float64(60),    # el_max_deg
+                np.float64(-45),  # el_min_deg
+                np.float64(4),    # el_max_deg
                 np.float64(max_range),
                 np.float64(resolution),
                 np.float64(self.voxel_size),

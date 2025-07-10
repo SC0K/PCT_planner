@@ -61,7 +61,7 @@ plt.yticks(fontsize=16)
 # plt.yscale('log')
 plt.xlabel('Number of Candidates',fontsize=16)
 plt.ylabel('Time (ms)',fontsize=16)
-plt.title('Time for Rewards Calculation of Candidates via Raycasting',fontsize=16)
+# plt.title('Time for Rewards Calculation of Candidates via Raycasting',fontsize=16)
 plt.legend(fontsize=13)  # Increased font size for the legend
 plt.grid(True, which="both", ls="--")
 plt.tight_layout()
