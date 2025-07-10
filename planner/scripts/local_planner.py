@@ -224,32 +224,27 @@ class LidarMappingNode:
             return
     
         robot_pos = np.array(self.robot_position)
-        # Find the closest critical point
         dists = np.linalg.norm(critical_points_xyz - robot_pos, axis=1)
         idx = np.argmin(dists)
         target_cp = critical_points_xyz[idx]
     
         
-        # Optionally, face the critical point
         direction = target_cp[:2] - robot_pos[:2]
         yaw = math.atan2(direction[1], direction[0])
         orientation = tf_trans.quaternion_from_euler(0, 0, yaw)
         
     
-        # --- Select local patch of projected added voxels around the critical point ---
         cp_idx = self.critical_points[idx]
-        patch_radius_vox = 2/ self.planner.voxel_size  # search radius in voxels
+        patch_radius_vox = 2/ self.planner.voxel_size 
         patch_voxels = []
         for v in self.added_voxels_projected_set:
             if abs(v[0] - cp_idx[0]) <= patch_radius_vox and abs(v[1] - cp_idx[1]) <= patch_radius_vox and abs(v[2] - cp_idx[2]) <= 1:
                 patch_voxels.append(v)
         if len(patch_voxels) < 3:
-            # Fallback: just use the critical point itself
             patch_coords = np.array([target_cp[:2]])
         else:
             patch_coords = (np.array(patch_voxels)[:, :2] + self.planner.min_idx[:2] + 0.5) * self.planner.voxel_size
 
-        # --- Fit ellipse (PCA) in xy-plane ---
         center = target_cp[:2]
         centered = patch_coords - center
         cov = np.cov(centered, rowvar=False)
@@ -259,7 +254,6 @@ class LidarMappingNode:
         r_major = max(np.sqrt(eigvals.max()), 1.5)
         r_minor = max(np.sqrt(eigvals.min()), 1.5) 
         
-        # --- Circling the centroid: select viewpoints around the ellipse ---
         if not hasattr(self, 'ellipse_view_idx'):
             self.ellipse_view_idx = 0
         
@@ -276,7 +270,6 @@ class LidarMappingNode:
             viewpoint_xy_final = viewpoint_xy
         viewpoint = np.array([viewpoint_xy_final[0], viewpoint_xy_final[1], robot_pos[2]])
         
-        # Publish as goal, facing the critical point
         goal_msg = PoseStamped()
         goal_msg.header.stamp = rospy.Time.now()
         goal_msg.header.frame_id = "map"
@@ -289,11 +282,10 @@ class LidarMappingNode:
         goal_msg.pose.orientation = Quaternion(*orientation)
         self.goal_pub.publish(goal_msg)
         
-        # After reaching the viewpoint, increment the index for the next call
         if np.linalg.norm(robot_pos[:2] - viewpoint_xy_final) < 0.5:
             self.ellipse_view_idx = (self.ellipse_view_idx + 1) % num_views
         
-        # --- Visualize the ellipse in RViz ---
+        #  Visualize the ellipse in RViz 
         ellipse_marker = Marker()
         ellipse_marker.header.frame_id = "map"
         ellipse_marker.header.stamp = rospy.Time.now()
@@ -307,7 +299,6 @@ class LidarMappingNode:
         ellipse_marker.color.b = 0.0
         ellipse_marker.color.a = 1.0
         
-        # Generate ellipse points in xy-plane
         num_points = 40
         theta = np.linspace(0, 2 * np.pi, num_points)
         ellipse_points = []
@@ -320,7 +311,6 @@ class LidarMappingNode:
             ellipse_points.append(p)
         ellipse_marker.points = ellipse_points
         
-        # Publish the marker
         if not hasattr(self, 'ellipse_pub'):
             self.ellipse_pub = rospy.Publisher("/critical_point_ellipse", Marker, queue_size=1)
         self.ellipse_pub.publish(ellipse_marker)
@@ -366,7 +356,6 @@ class LidarMappingNode:
             self.goal_pub.publish(goal_msg)
             return
 
-        # Increment candidate index if this waypoint matches candidate position
         if (self.next_candidate_xyz_idx < len(self.candidate_points_xyz) and
             np.allclose(current_waypoint[:3], self.candidate_points_xyz[self.next_candidate_xyz_idx], atol=0.5)):
             self.next_candidate_xyz_idx += 1
@@ -389,19 +378,6 @@ class LidarMappingNode:
                         unscanned_indices = cp.argwhere(unscanned_voxels_local).get()
                         unscanned_patch_size = self.find_largest_continuous_patch(unscanned_indices)
                         if unscanned_patch_size > 10:
-                            # unscanned_center = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-                            # shift_distance = self.coverage_shift_distance
-                            # rotation_matrix = tf_trans.quaternion_matrix(tf_trans.quaternion_from_euler(0, 0, math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])))[:3, :3]
-                            # shift_vector = rotation_matrix @ np.array([-shift_distance, 0, 0])
-                            # unscanned_center += shift_vector
-                            # angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
-                            # orientation = tf_trans.quaternion_from_euler(0, 0, angle)
-                            # orientation = Quaternion(*orientation)
-                            # robot_pos = np.array(self.robot_position)
-                            # unscanned_center[2] = robot_pos[2]
-                            # self.coverage_target = unscanned_center
-                            # self.coverage_orientation = orientation
-                            # self.coverage_angle = angle
                             self.state = self.STATE_COVERAGE
                             return
     def find_critical_points(self,event):
@@ -430,14 +406,13 @@ class LidarMappingNode:
             remaining_target = target & ~scanned
             projected_list_buffer = list(projected_hash_voxels_buffer)
             region_offsets = [
-                [ (1, 0), (0, 1), (1, 1)],      # +x, +y
-                [ (1, 0), (0, -1), (1, -1)],    # +x, -y
-                [ (-1, 0), (0, 1), (-1, 1)],    # -x, +y
-                [ (-1, 0), (0, -1), (-1, -1)]   # -x, -y
+                [ (1, 0), (0, 1), (1, 1)],     
+                [ (1, 0), (0, -1), (1, -1)],   
+                [ (-1, 0), (0, 1), (-1, 1)],    
+                [ (-1, 0), (0, -1), (-1, -1)]  
             ]
             
             for idx in projected_list_buffer:
-                #  or projected_list_buffer
                 x, y, z = idx
                 for region in region_offsets:
                     region_indices = []
@@ -447,11 +422,9 @@ class LidarMappingNode:
                             region_indices.append((nx, ny, z))
                     if len(region_indices) < 3:
                         continue
-                    # Count projected voxels in this region (using all added voxels)
                     projected_count = sum((ix, iy, iz) in self.added_voxels_projected_set for ix, iy, iz in region_indices) + 1 # +1 for the center voxel
                     if projected_count > 1:
                         continue
-                    # Check for both scanned and unscanned target voxels
                     has_scanned = any(scanned[ix, iy, iz] for ix, iy, iz in region_indices)
                     has_unscanned = any(remaining_target[ix, iy, iz] for ix, iy, iz in region_indices)
                     if has_scanned and has_unscanned:
@@ -460,7 +433,6 @@ class LidarMappingNode:
                         break  # Only need one region to satisfy
             self.prune_invalid_critical_points()
 
-            # === Publish critical points as PointCloud2 for visualization ===
             if len(critical_points) > 0:
                 critical_points_xyz = (np.array(self.critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
                 header = std_msgs.msg.Header()
@@ -468,18 +440,12 @@ class LidarMappingNode:
                 header.frame_id = "map"
                 critical_pc2 = pc2.create_cloud_xyz32(header, critical_points_xyz.astype(np.float32))
                 self.critical_points_pub.publish(critical_pc2)         
-            
-            ## Only update tomograph if there are new voxels
+       
             if len(unique_voxels) > 0:
                 self.add_new_obstacles_to_tomograph(unique_voxels)
                 self.publishTomogram(self.planner.elev_g, self.planner.trav)
     def prune_invalid_critical_points(self):
-        """
-        Remove critical points that are no longer valid.
-        A critical point is invalid if:
-        - It is now scanned, or
-        - The 2x2 region around it no longer meets the critical point criteria.
-        """
+
         if not self.critical_points:
             return
 
@@ -490,10 +456,10 @@ class LidarMappingNode:
         projected_set = self.added_voxels_projected_set
 
         region_offsets = [
-            [ (1, 0), (0, 1), (1, 1)],      # +x, +y
-            [ (1, 0), (0, -1), (1, -1)],    # +x, -y
-            [ (-1, 0), (0, 1), (-1, 1)],    # -x, +y
-            [ (-1, 0), (0, -1), (-1, -1)]   # -x, -y
+            [ (1, 0), (0, 1), (1, 1)],      
+            [ (1, 0), (0, -1), (1, -1)],    
+            [ (-1, 0), (0, 1), (-1, 1)],    
+            [ (-1, 0), (0, -1), (-1, -1)]   
         ]
 
         valid_critical_points = []
@@ -521,7 +487,6 @@ class LidarMappingNode:
 
         self.critical_points = valid_critical_points
     def handle_coverage(self):
-        # Always recompute the unscanned region and plan to its center
         scanned_target_voxels_local = self.scanned_voxels & self.target_voxels_candidates[self.next_candidate_xyz_idx-1]
         unscanned_voxels_local = self.target_voxels_candidates[self.next_candidate_xyz_idx-1] & ~scanned_target_voxels_local
     
@@ -561,7 +526,6 @@ class LidarMappingNode:
     
         # Compute the unscanned center and shift as in handle_follow_path
         unscanned_center_raw = np.mean(unscanned_indices, axis=0) * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
-        # Compute the normal direction of the unscanned patch
         unscanned_points = unscanned_indices * self.planner.voxel_size + self.planner.min_idx * self.planner.voxel_size
         centroid = np.mean(unscanned_points, axis=0)
         centered = unscanned_points - centroid
@@ -572,11 +536,9 @@ class LidarMappingNode:
         shift_distance = 1.5  
         
         if abs(normal[2]) > 0.7:
-            # Ground/ceiling: use original candidate angle
             angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
             shift_vector = np.array([math.cos(angle), math.sin(angle), 0]) * -shift_distance
         else:
-            # Wall: choose normal_xy direction closest to -candidate angle
             angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
             candidate_dir = np.array([math.cos(angle), math.sin(angle), 0])
             normal_xy = normal.copy()
@@ -584,9 +546,8 @@ class LidarMappingNode:
             if np.linalg.norm(normal_xy) > 1e-3:
                 normal_xy /= np.linalg.norm(normal_xy)
             else:
-                normal_xy = np.array([1, 0, 0])  # fallback
+                normal_xy = np.array([1, 0, 0])  
         
-            # Compare normal_xy and -candidate_dir, flip if needed
             if np.dot(normal_xy, -candidate_dir) < 0:
                 normal_xy = -normal_xy
             shift_vector = normal_xy * shift_distance
@@ -602,16 +563,12 @@ class LidarMappingNode:
         unscanned_center_msg.point.z = unscanned_center[2]
         self.unscanned_center_pub.publish(unscanned_center_msg)
         
-        # Use online_local_replan to find a traversable goal and plan a path
-        # robot_pos = np.array([self.robot_position[1], self.robot_position[0], self.robot_position[2]])
-        # Wait until replanning is finished
         while self.replanning:
             rospy.loginfo("Waiting for replanning to finish...")
             rospy.sleep(0.1)  # Sleep for 100ms
         planned_traj = self.planner.online_local_replan(robot_pos, unscanned_center, height_tol=1.5)
         if planned_traj is None or len(planned_traj) < 3:
             rospy.logwarn("No valid path found to unscanned region. Skipping to next candidate.")
-            # Use candidate angle for orientation
             angle = math.radians(self.candidate_points_angles[self.next_candidate_xyz_idx-1])
             orientation = tf_trans.quaternion_from_euler(0, 0, angle)
             orientation = Quaternion(*orientation)
@@ -625,7 +582,6 @@ class LidarMappingNode:
             self.goal_pub.publish(goal_msg)
             return
     
-        # === Publish replanned trajectory for visualization ===
         path_msg = Path()
         path_msg.header.stamp = rospy.Time.now()
         path_msg.header.frame_id = "map"
@@ -639,7 +595,6 @@ class LidarMappingNode:
             path_msg.poses.append(pose)
         self.replanned_path_pub.publish(path_msg)
     
-        # === Path following logic: always face the center of the unscanned area ===
         dists = np.linalg.norm(planned_traj - robot_pos, axis=1)
         closest_idx = np.argmin(dists)
     
@@ -652,13 +607,11 @@ class LidarMappingNode:
         #     self.coverage_start_time = None
         #     return
     
-        # Otherwise, send the next point as goal, always facing the unscanned center
         if closest_idx + 3 < len(planned_traj):
             next_goal = planned_traj[closest_idx + 3]
         else:
             next_goal = planned_traj[-1]
     
-        # Orientation: always face the center of the unscanned area
         direction = np.array(unscanned_center_raw[:2]) - np.array(next_goal[:2])
         yaw = math.atan2(direction[1], direction[0])
         orientation = tf_trans.quaternion_from_euler(0, 0, yaw)
@@ -674,43 +627,24 @@ class LidarMappingNode:
         self.goal_pub.publish(goal_msg)
         
     def add_new_obstacles_to_tomograph(self, voxel_list):
-        """
-        Add newly detected obstacle voxels to the tomograph and update the planner.
-        Also replan the path segment between current and next candidate points if needed.
-        """
         if voxel_list is None or len(voxel_list) == 0:
             return False
     
-        # Convert voxel indices to world coordinates
         indices = np.array(voxel_list)
         world_points = (indices + self.planner.min_idx + 0.5) * self.planner.voxel_size
     
-        # Add these points to the tomograph (assuming your planner has such a method)
         self.planner.add_obstacle_points(world_points, voxel_list)
     
         rospy.loginfo(f"Added {len(world_points)} new obstacle points to tomograph.")
         self.tomo_update_flag = True
         return True
     def select_best_reachable_candidate(self, prev_candidate_idx, center_idx, current_remaining_candidate_idx, radius, num_samples=5):
-        """
-        Sample candidate points around center_idx and select the best reachable one from prev_candidate_idx,
-        maximizing coverage of the target area visible from prev_candidate_idx.
-    
-        Args:
-            prev_candidate_idx (np.ndarray): (s, x, y) grid index of previous candidate.
-            center_idx (np.ndarray): (s, x, y) grid index of the center to sample around.
-            radius (float): Sampling radius in meters.
-            num_samples (int): Number of points to sample.
-    
-        Returns:
-            np.ndarray: (s, x, y) grid index of the best reachable candidate, or None if none found.
-        """
         sampled_indices = self.planner.sampleUniformPointsInSpaceOnline(
             num_samples=num_samples,
             reachable_from=prev_candidate_idx,
             center_idx=center_idx,
             radius=radius
-        )  # sampled_indices: (N, 3)
+        ) 
     
         if sampled_indices.shape[0] == 0:
             rospy.logwarn("No valid sampled candidates found around center_idx.")
@@ -719,7 +653,6 @@ class LidarMappingNode:
         target_voxels = self.target_voxels_candidates[self.next_candidate_xyz_idx + current_remaining_candidate_idx]
         candidate_angles = [0, 90, 180, 270]
     
-        # Collect all reachable (idx, angle) pairs
         candidate_pairs = []
         candidate_poses = []
         candidate_yaws = []
@@ -737,11 +670,9 @@ class LidarMappingNode:
             rospy.logwarn("No reachable candidate viewpoints found.")
             return None
     
-        # Use batched_ray_reward for all candidates at once
         candidate_poses = np.array(candidate_poses) + np.array([0,0,0.5])
         rewards, visible_voxels_list = self.planner.batched_ray_reward_online(np.array(candidate_poses), np.array(candidate_yaws))
     
-        # Find the best candidate by maximizing coverage of target_voxels
         best_idx = None
         best_angle = None
         best_coverage = -1
@@ -1046,7 +977,6 @@ class LidarMappingNode:
         if indices.shape[0] == 0:
             return
     
-        # Move indices to GPU for fast assignment
         indices_cp = cp.asarray(indices)
         x_idx, y_idx, z_idx = indices_cp[:, 0], indices_cp[:, 1], indices_cp[:, 2]
         self.scanned_voxels[x_idx, y_idx, z_idx] = True
@@ -1067,7 +997,6 @@ class LidarMappingNode:
         if indices.shape[0] == 0:
             return
     
-        # Add to self.added_voxels (avoid duplicates)
             
         new_voxels = []
         for idx in indices:
@@ -1078,60 +1007,6 @@ class LidarMappingNode:
                 # self.hash_grid_online[x, y, z] = True
                 # self.planner.hash_grid_online[x, y, z] = True  # Update the hash grid with new voxel
         self.new_voxel_buffer.extend(new_voxels)
-    
-        # # --- Efficient projection of new voxels onto hash grid ---
-        # projected_hash_voxels = set()
-        # grid_shape = self.planner.grid_shape
-        # for idx in new_voxels:
-        #     x, y, z = idx
-        #     for zz in range(z, -1, -1):
-        #         if self.hash_grid[x, y, zz]:
-        #             if (x, y, zz) not in projected_hash_voxels:
-        #                 projected_hash_voxels.add((x, y, zz))
-        #             break  # Only project to the first hash_grid cell below
-    
-        # # === Find critical points among projected_hash_voxels ===
-        # critical_points = []
-        # added_voxels_set = set(self.added_voxels)
-        # explored_voxels = set(map(tuple, cp.argwhere(self.scanned_voxels).get()))
-        # unexplored_voxels = set(
-        #     (x, y, z)
-        #     for x, y, z in projected_hash_voxels
-        #     if (x, y, z) not in explored_voxels
-        # )
-        # neighbor_offsets = [
-        #     (1, 0, 0), (-1, 0, 0),
-        #     (0, 1, 0), (0, -1, 0),
-        #     (0, 0, 1), (0, 0, -1)
-        # ]
-        # for idx in projected_hash_voxels:
-        #     neighbor_added = 0
-        #     has_unexplored = False
-        #     has_explored = False
-        #     for dx, dy, dz in neighbor_offsets:
-        #         nidx = (idx[0] + dx, idx[1] + dy, idx[2] + dz)
-        #         if (0 <= nidx[0] < grid_shape[0] and
-        #             0 <= nidx[1] < grid_shape[1] and
-        #             0 <= nidx[2] < grid_shape[2]):
-        #             if nidx in added_voxels_set:
-        #                 neighbor_added += 1
-        #             if nidx in explored_voxels:
-        #                 has_explored = True
-        #             if nidx in unexplored_voxels:
-        #                 has_unexplored = True
-        #     if neighbor_added <= 1 and has_unexplored and has_explored:
-        #         critical_points.append(idx)
-    
-        # # === Publish critical points as PointCloud2 for visualization ===
-        # if len(critical_points) > 0:
-        #     critical_points_xyz = (np.array(critical_points) + self.planner.min_idx + 0.5) * self.planner.voxel_size
-        #     header = std_msgs.msg.Header()
-        #     header.stamp = rospy.Time.now()
-        #     header.frame_id = "map"
-        #     critical_pc2 = pc2.create_cloud_xyz32(header, critical_points_xyz.astype(np.float32))
-        #     self.critical_points_pub.publish(critical_pc2)
-    
-        # self.add_new_obstacles_to_tomograph(indices)
         
 
     def follow_path(self):
@@ -1151,7 +1026,7 @@ if __name__ == "__main__":
     cfg = Config()
     planner = TomogramCoveragePlanner(cfg)
     planner.loadTomogram("experiments/2F_2*1")
-    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1075)
+    planner.loadVoxelMap("/your_directory/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1075)  # TODO: change to your directory
     # planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE_1F.pcd", 0.2)
     node = LidarMappingNode(planner)
     node.follow_path()

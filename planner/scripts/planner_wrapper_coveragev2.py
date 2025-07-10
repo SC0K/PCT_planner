@@ -240,13 +240,6 @@ class TomogramCoveragePlanner(object):
         self.explored = self.initExplorationGraph()
 
     def initExplorationGraph(self):
-        """
-        Initialize a graph to track whether cells in the elevation grid (elev_g) are explored.
-    
-        Returns:
-            np.ndarray: A float array where -100 indicates ignored cells, 0.0 indicates unexplored cells, 
-                        and 1.0 indicates explored cells.
-        """
         exploration_graph = np.full(self.elev_g.shape, np.nan, dtype=np.float32)
         valid_mask = self.elev_g != -100
         exploration_graph[valid_mask] = 0.0
@@ -360,14 +353,6 @@ class TomogramCoveragePlanner(object):
     #     return adj_matrix
 
     def compute_adjacency_matrix(self, sampled_points_idx):
-        """
-        Compute an adjacency matrix where each entry represents the path length between two sampled points.
-        Args:
-            sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3), (s, x, y).
-        Returns:
-            np.ndarray: Adjacency matrix of size N x N with path lengths.
-        """
-        # Flip x and y: (s, x, y) -> (s, y, x)
         sampled_points_flipped = sampled_points_idx.copy()
         sampled_points_flipped[:, 1], sampled_points_flipped[:, 2] = (
             sampled_points_flipped[:, 2], sampled_points_flipped[:, 1].copy()
@@ -642,15 +627,6 @@ class TomogramCoveragePlanner(object):
         filtered_xyz = candidate_xyz[reachable_mask]
         return filtered_indices, filtered_xyz
     def sampleTraversablePoints_rad(self, num_samples):
-        """
-        Sample a uniform set of traversable points from the travel cost map.
-    
-        Args:
-            num_samples (int): The number of points to sample.
-    
-        Returns:
-            np.ndarray: Array of sampled traversable points (x, y, z indices).
-        """
         traversable_mask = (self.trav < self.cost_barrier) & (self.elev_g >= 0) 
         traversable_indices = np.argwhere(traversable_mask)
     
@@ -676,15 +652,6 @@ class TomogramCoveragePlanner(object):
     
         return sampled_idx, sampled_xyz
     def idx2pos_3D(self, idx):
-        """
-        Convert grid indices to map coordinates.
-    
-        Args:
-            idx (np.ndarray): The grid indices (s, x, y).
-    
-        Returns:
-            np.ndarray: The map coordinates (x, y, z).
-        """
         idx = np.array(idx, dtype=int)
         map_x = (idx[1] - self.offset[0]) * self.resolution + self.center[0]
         map_y = (idx[2] - self.offset[1]) * self.resolution + self.center[1]
@@ -726,7 +693,7 @@ class TomogramCoveragePlanner(object):
         # sampled_points_idx, sampled_points_xyz = self.filter_reachable_candidates(sampled_points_xyz_raw, sampled_points_idx_raw)
         # sampled_points_xyz = sampled_points_xyz[:5]
         # sampled_points_idx = sampled_points_idx[:5]
-        sampled_points_xyz = sampled_points_xyz + np.array([0, 0, 0.6])  # camera height offset
+        sampled_points_xyz = sampled_points_xyz + np.array([0, 0, 0.5])  # camera height offset
 
         yaw_angles = [0, 90, 180, 270]
         grid_shape = cp.asarray(self.hash_grid.shape)
@@ -796,7 +763,7 @@ class TomogramCoveragePlanner(object):
         angles_deg = np.asarray(angles_deg)
         assert candidate_points_xyz.shape[0] == angles_deg.shape[0], "Number of poses and angles must match"
     
-        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])
+        candidate_points_xyz = candidate_points_xyz
     
         _, visible_voxels_list = self.batched_ray_reward(candidate_points_xyz, angles_deg)
         return visible_voxels_list
@@ -837,11 +804,6 @@ class TomogramCoveragePlanner(object):
     
         return explored_voxels_max, explored_voxels_candidate
     def simulate_visibility(self, idx, angle, fov_vert=None, fov_hor=None, sensor_range=None, n_rays=30):
-        """
-        Simulate visibility from a candidate grid index and angle.
-        Returns a CuPy boolean mask (same shape as self.hash_grid) of visible voxels.
-        Uses the batched_ray_reward function for better performance.
-        """
         if fov_vert is None:
             fov_vert = self.fov_vert
         if fov_hor is None:
@@ -869,25 +831,16 @@ class TomogramCoveragePlanner(object):
         if local_idx.shape[0] > 0:
             mask[local_idx[:, 0], local_idx[:, 1], local_idx[:, 2]] = True
         return mask
-    def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles, use_dilation=False):
+    def compute_and_visualise_explored_voxels(self, candidate_points_xyz, angles, use_dilation=True):
         import cupyx.scipy.ndimage as cp_ndimage
     
         candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])
+        angles = np.asarray(angles)
+        # Use batched_ray_reward for all candidate poses and angles
+        rewards, visibles = self.batched_ray_reward(candidate_points_xyz, angles)
+    
         explored_voxels = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
-    
-        for i, candidate_pose in enumerate(candidate_points_xyz):
-            orientation = np.array([
-                [np.cos(np.radians(angles[i])), -np.sin(np.radians(angles[i])), 0],
-                [np.sin(np.radians(angles[i])),  np.cos(np.radians(angles[i])), 0],
-                [0, 0, 1]
-            ])
-    
-            visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape,
-                self.hash_grid, self.fov_vert, self.fov_hor, self.sensor_range_analysis,
-                self.resolution_raycast, n_rays=50
-            )
-    
+        for visible in visibles:
             for v in visible:
                 local_idx = tuple(np.array(v) - self.min_idx)
                 explored_voxels[local_idx] = True
@@ -902,7 +855,6 @@ class TomogramCoveragePlanner(object):
         hash_np = cp.asnumpy(self.hash_grid)
     
         voxel_indices = np.argwhere(hash_np)
-    
         voxel_centers = (voxel_indices + self.min_idx) * self.voxel_size
     
         vis_pcd = o3d.geometry.PointCloud()
@@ -913,8 +865,6 @@ class TomogramCoveragePlanner(object):
         vis_pcd.colors = o3d.utility.Vector3dVector(colors)
     
         o3d.visualization.draw_geometries([vis_pcd], window_name="Explored Voxel Map")
-    
-        return explored_voxels
     
     def batched_ray_reward(self, candidate_poses, orientations_deg):
         fov_deg = self.sensor_fov
@@ -1004,10 +954,6 @@ class TomogramCoveragePlanner(object):
         # print(f"[batched_ray_reward] n={n} setup={t1-t0:.4f}s raycast={t2-t1:.4f}s post={t4-t3:.4f}s total={t4-t0:.4f}s")
         return rewards, visible_voxels_list
     def batched_ray_reward_online(self, candidate_poses, orientations_deg):
-        """
-        Compute the number of new (unexplored) voxels seen from each candidate pose and orientation.
-        Uses a custom CUDA kernel for ray prep.
-        """
         fov_deg = self.sensor_fov
         max_range = self.sensor_range
         resolution = self.resolution_raycast

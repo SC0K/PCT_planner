@@ -17,7 +17,7 @@ sys.path.append('../')
 from config import Config
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--scene', type=str, default='Spiral', help='Name of the scene. Available: [\'Spiral\', \'Building\', \'Plaza\']')
+parser.add_argument('--scene', type=str, default='Building', help='Name of the scene.')
 args = parser.parse_args()
 
 cfg = Config()
@@ -141,7 +141,7 @@ def pct_plan():
     path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
-    explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, False)
+    explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
     publish_points(updated_sampled_points_xyz)
     area = compute_covered_area(explored_cells, planner.resolution_raycast)
     print(f"Covered Area: {area:.2f} m^2")
