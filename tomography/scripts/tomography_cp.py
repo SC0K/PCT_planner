@@ -91,12 +91,6 @@ class Tomography(object):
         t_all = 0.0
         n_repeat = 1
 
-        """ 
-        GPU time benchmark, where CUDA events are synchronized for correct time measurement.
-        The function is repeatedly run for n_repeat times to calculate the average processing time of each modules.
-        The time of the first warm-up run is excluded to reduce timing fluctuation and exclude the overhead in initial invocations.
-        See https://docs.cupy.dev/en/stable/user_guide/performance.html for more details
-        """
         for i in range(n_repeat + 1):
             t_start = time.time()
             layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c, t_gpu,raw_cost = self.tomogram.point2map(points)
@@ -134,12 +128,6 @@ class Tomography(object):
         t_all = 0.0
         n_repeat = 1
 
-        """ 
-        GPU time benchmark, where CUDA events are synchronized for correct time measurement.
-        The function is repeatedly run for n_repeat times to calculate the average processing time of each modules.
-        The time of the first warm-up run is excluded to reduce timing fluctuation and exclude the overhead in initial invocations.
-        See https://docs.cupy.dev/en/stable/user_guide/performance.html for more details
-        """
         for i in range(n_repeat + 1):
             t_start = time.time()
             layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c, t_gpu,raw_cost = self.tomogram.point2map(points)
@@ -307,33 +295,32 @@ class Tomography(object):
 
     def initPathInjection(self):
         self.clicked_points = []
-        self.all_paths = []  # Store all pairs of traversable paths
+        self.all_paths = []  
         self.clicked_points_pub = rospy.Publisher("/clicked_points_marker", Marker, queue_size=10)
         rospy.Subscriber("/clicked_point", PointStamped, self.clicked_point_callback)
-        rospy.Subscriber("/end_input", Empty, self.end_input_callback)  # Subscribe to an "end input" topic
+        rospy.Subscriber("/end_input", Empty, self.end_input_callback)
         rospy.loginfo("Click pairs of points in RViz to inject traversable paths. Use rostopic pub /end_input std_msgs/Empty \"{}\" to finish input.")
     
     def clicked_point_callback(self, msg):
         self.clicked_points.append(msg.point)
         rospy.loginfo(f"Clicked: ({msg.point.x:.2f}, {msg.point.y:.2f}, {msg.point.z:.2f})")
     
-        # Publish the clicked points for visualization
         marker = Marker()
         marker.header.frame_id = self.map_frame
         marker.header.stamp = rospy.Time.now()
         marker.ns = "clicked_points"
-        marker.id = len(self.clicked_points)  # Unique ID for each point
+        marker.id = len(self.clicked_points)  
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position = msg.point
         marker.pose.orientation.w = 1.0
-        marker.scale.x = 0.2  # Adjust size as needed
+        marker.scale.x = 0.2 
         marker.scale.y = 0.2
         marker.scale.z = 0.2
         marker.color.r = 1.0
         marker.color.g = 0.0
         marker.color.b = 0.0
-        marker.color.a = 1.0  # Fully opaque
+        marker.color.a = 1.0  
         self.clicked_points_pub.publish(marker)
     
         if len(self.clicked_points) == 2:
@@ -346,7 +333,6 @@ class Tomography(object):
         rospy.loginfo("End of input detected. Processing all paths.")
         points = self.loadPCD(self.pcd_file)
     
-        # Convert all point pairs to start and end indices
         start_end_indices = []
         for start_point, end_point in self.all_paths:
             start_xyz = np.array([start_point.x, start_point.y, start_point.z])
@@ -355,33 +341,20 @@ class Tomography(object):
             end_idx = self.pos2idx_3D(end_xyz)
             start_end_indices.append((start_idx, end_idx))
     
-        # Pass all pairs to process_modified
         self.process_modified(points, start_end_indices)
     
         rospy.loginfo("All paths processed.")
         self.all_paths = []  # Clear the paths after processing
     def pos2idx_3D(self, pos):
-        """
-        Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
-        
-        Args:
-            pos (np.ndarray): The 3D position (x, y, z).
-        
-        Returns:
-            np.ndarray: The grid indices (s, y, x).
-        """
-        # Subtract the center to align with the grid
         pos_xy = np.array([pos[0], pos[1]])
         pos_xy = pos_xy - self.center
         
-        # Calculate x and y indices
         offset = np.array([int(self.map_dim_x / 2), int(self.map_dim_y / 2)], dtype=np.int32)
         idx_xy = np.round(pos_xy / self.resolution).astype(np.int32) + offset
-        idx_xy = np.array([idx_xy[1], idx_xy[0]], dtype=np.int32)  # Swap x and y for grid indexing
+        idx_xy = np.array([idx_xy[1], idx_xy[0]], dtype=np.int32) 
         
-        # Search for the z index (layer number) using the precomputed layer modes
-        z_height = pos[2]  # Extract the z-coordinate
-        z_idx = -1  # Default to -1 if no valid layer is found
+        z_height = pos[2]  
+        z_idx = -1  
         for s in range(self.layers_g.shape[0]):
             print(f"Layer height {s}: {self.layers_g[s, idx_xy[1], idx_xy[0]]}")
             if abs(z_height - self.layers_g[s, idx_xy[1], idx_xy[0]]) <= self.resolution*2:

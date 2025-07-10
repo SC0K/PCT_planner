@@ -44,7 +44,6 @@ class LidarMappingNode:
         
         self.current_candidate_xyz_idx = 0
 
-        # Use CuPy arrays for target_voxels and scanned_voxels
         self.target_voxels, self.target_voxels_candidates = planner.compute_explored_voxels(self.candidate_points_xyz, self.candidate_points_angles)
         self.scanned_voxels = cp.zeros_like(self.target_voxels, dtype=cp.bool_)
 
@@ -67,15 +66,11 @@ class LidarMappingNode:
         self.start_time = None
         self.total_time = None
 
-        # avoiding the robot getting stuck at one place because the goal is not reachable
         self.last_robot_pose = None
         self.stuck_counter = 0
         self.stuck_threshold = 10
 
     def robot_pose_callback(self, odom_msg):
-        """
-        Callback to update the robot's current position from the /anymal/pose_in_sim_world topic.
-        """
         self.robot_position = (
             odom_msg.pose.pose.position.x,
             odom_msg.pose.pose.position.y,
@@ -88,7 +83,6 @@ class LidarMappingNode:
             odom_msg.pose.pose.orientation.w
         )
     def is_robot_stuck(self):
-        """Check if the robot is stuck (position and orientation unchanged for several cycles)."""
         current_pose = (self.robot_position, self.robot_orientation)
         if self.last_robot_pose is not None:
             pos_diff = np.linalg.norm(np.array(self.robot_position) - np.array(self.last_robot_pose[0]))
@@ -101,9 +95,6 @@ class LidarMappingNode:
         return self.stuck_counter >= self.stuck_threshold
 
     def calculate_orientation(self, current_waypoint, next_waypoint):
-        """
-        Calculate the yaw angle (orientation) between two waypoints and convert it to a quaternion.
-        """
         dx = next_waypoint[0] - current_waypoint[0]
         dy = next_waypoint[1] - current_waypoint[1]
         yaw = math.atan2(dy, dx)  # Calculate yaw angle
@@ -162,15 +153,6 @@ class LidarMappingNode:
         self.current_waypoint_idx += 1
 
     def find_largest_continuous_patch(self, unscanned_indices):
-        """
-        Find the largest continuous patch of unscanned voxels.
-
-        Args:
-            unscanned_indices (np.ndarray): Indices of unscanned voxels.
-
-        Returns:
-            int: Size of the largest continuous patch.
-        """
         from scipy.ndimage import label
 
         unscanned_grid = np.zeros(self.planner.grid_shape, dtype=bool)
@@ -184,7 +166,6 @@ class LidarMappingNode:
         return np.max(patch_sizes) if len(patch_sizes) > 0 else 0
 
     def publish_target_voxels(self):
-        """Publish the total target voxels as a PointCloud2."""
         indices = cp.argwhere(self.target_voxels).get()
         if indices.shape[0] == 0:
             return
@@ -197,7 +178,6 @@ class LidarMappingNode:
         self.target_voxels_pc_pub.publish(pc2_msg)
     
     def publish_current_target_voxels(self):
-        """Publish the current target voxels as a PointCloud2."""
         indices = cp.argwhere(self.target_voxels_candidates[self.current_candidate_xyz_idx]).get()
         if indices.shape[0] == 0:
             return
@@ -210,7 +190,6 @@ class LidarMappingNode:
         self.current_target_voxels_pc_pub.publish(pc2_msg)
     
     def publish_added_voxels(self):
-        """Publish the newly added voxels as a PointCloud2 for visualization."""
         if not hasattr(self, 'added_voxels') or len(self.added_voxels) == 0:
             return
         indices = np.array(self.added_voxels)
@@ -223,8 +202,6 @@ class LidarMappingNode:
         self.added_voxels_pc_pub.publish(pc2_msg)
 
     def publish_scanned_voxels(self):
-        """Publish the scanned target voxels as a PointCloud2."""
-        # Use dilated scanned_voxels for tolerance
         tolerance_voxels = 0  # Adjust as needed
         structure = cp.ones((2 * tolerance_voxels + 1,) * 3, dtype=cp.bool_)
         dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
@@ -279,7 +256,6 @@ class LidarMappingNode:
                 idx_tuple = tuple(idx)
                 self.added_voxels.append(idx_tuple)
         
-        # Use dilated scanned_voxels for tolerance in coverage calculation
         dilated_scanned_voxels = cupyx.scipy.ndimage.binary_dilation(self.scanned_voxels, structure=structure)
         scanned_target_voxels = dilated_scanned_voxels & self.target_voxels
         remaining_target_voxels = self.target_voxels & ~scanned_target_voxels

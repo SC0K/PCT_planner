@@ -58,7 +58,6 @@ class TomogramCoveragePlanner(object):
             self.slice_dh = float(data_dict['slice_dh'])
             self.map_dim = [tomogram.shape[2], tomogram.shape[3]]
             self.offset = np.array([int(self.map_dim[0] / 2), int(self.map_dim[1] / 2)], dtype=np.int32)
-            # self.sensor_range = int(round(self.cfg.sensor.sensor_range / self.resolution))
 
 
         self.trav = tomogram[0]
@@ -72,14 +71,6 @@ class TomogramCoveragePlanner(object):
 
         
         self.initPlanner(self.trav, self.trav_gx, self.trav_gy, self.elev_g, self.elev_c)
-        # exportTomogram(np.stack((layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c)), map_file)
-        # layers_t : travel cost
-        # trav_grad_x : gradient x
-        # trav_grad_y : gradient y
-        # layers_g : ground height
-        # layers_c : ceiling height
-
-        # Initialize the explored graph
         self.explored = self.initExplorationGraph()
 
     def initExplorationGraph(self):
@@ -90,17 +81,15 @@ class TomogramCoveragePlanner(object):
             np.ndarray: A float array where -100 indicates ignored cells, 0.0 indicates unexplored cells, 
                         and 1.0 indicates explored cells.
         """
-        # Initialize the exploration graph with NaN values
         exploration_graph = np.full(self.elev_g.shape, np.nan, dtype=np.float32)
-        # Set cells with elev_g != -100 to 0.0 (unexplored)
         valid_mask = self.elev_g != -100
         exploration_graph[valid_mask] = 0.0
         return exploration_graph
     
 
     def initPlanner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
-        diff_t = trav[1:] - trav[:-1]       # difference of travel cost between two slices
-        diff_g = np.abs(elev_g[1:] - elev_g[:-1])   # difference of elevation between two slices
+        diff_t = trav[1:] - trav[:-1]      
+        diff_g = np.abs(elev_g[1:] - elev_g[:-1])   
 
         gateway_up = np.zeros_like(trav, dtype=bool)
         mask_t = diff_t < -8.0
@@ -114,7 +103,7 @@ class TomogramCoveragePlanner(object):
         
         gateway = np.zeros_like(trav, dtype=np.int32)
         gateway[gateway_up] = 2
-        gateway[gateway_dn] = -2    # Boolean indexing
+        gateway[gateway_dn] = -2  
         self.gateway = gateway
 
         self.planner = ele_planner.OfflineElePlanner(
@@ -132,16 +121,6 @@ class TomogramCoveragePlanner(object):
         # print("Dimention of the elevation map:", self.elev_g.shape)
         # print("Dimention of the travel cost map:", self.trav.shape)
     def init_planner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
-        """
-        Initialize the planner with the required maps and parameters.
-    
-        Args:
-            trav (np.ndarray): Traversability map.
-            trav_gx (np.ndarray): Gradient in the x direction of the traversability map.
-            trav_gy (np.ndarray): Gradient in the y direction of the traversability map.
-            elev_g (np.ndarray): Ground elevation map.
-            elev_c (np.ndarray): Ceiling elevation map.
-        """
         self.planner.init_map(
             20, 15, self.resolution, self.n_slice, 0.2,
             trav.reshape(-1, trav.shape[-1]).astype(np.double),
@@ -152,7 +131,6 @@ class TomogramCoveragePlanner(object):
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
     def re_init_planner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
-        """ without initializing the trajectory optimizer."""
         self.planner.reinit_map(
             20, 15, self.resolution, self.n_slice, 0.2,
             trav.reshape(-1, trav.shape[-1]).astype(np.double),
@@ -163,13 +141,6 @@ class TomogramCoveragePlanner(object):
             -trav_gx.reshape(-1, trav_gx.shape[-1]).astype(np.double)
         )
     def compute_adjacency_matrix(self, sampled_points_idx):
-        """
-        Compute an adjacency matrix where each entry represents the path length between two sampled points.
-        Args:
-            sampled_points_idx (np.ndarray): Array of sampled points' grid indices (N x 3), (s, x, y).
-        Returns:
-            np.ndarray: Adjacency matrix of size N x N with path lengths.
-        """
         # Flip x and y: (s, x, y) -> (s, y, x)
         sampled_points_flipped = sampled_points_idx.copy()
         sampled_points_flipped[:, 1], sampled_points_flipped[:, 2] = (
@@ -217,7 +188,6 @@ class TomogramCoveragePlanner(object):
         return traj_3d
     
     def plan(self, start_pos, end_pos):
-        # TODO: calculate slice index. By default the start and end pos are all at slice 0
         # self.start_idx[1:] = self.pos2idx(start_pos)
         # self.end_idx[1:] = self.pos2idx(end_pos)
         self.start_idx[:] = self.pos2idx_3D(start_pos)
@@ -257,45 +227,23 @@ class TomogramCoveragePlanner(object):
         return idx
     
     def pos2idx_3D(self, pos):
-        """
-        Convert a 3D position (x, y, z) to grid indices (s, y, x), where s is the layer number.
-        
-        Args:
-            pos (np.ndarray): The 3D position (x, y, z).
-        
-        Returns:
-            np.ndarray: The grid indices (s, y, x).
-        """
-        # Subtract the center to align with the grid
         pos_xy = np.array([pos[0], pos[1]])
         pos_xy = pos_xy - self.center
         
-        # Calculate x and y indices
         idx_xy = np.round(pos_xy / self.resolution).astype(np.int32) + self.offset
         idx_xy = np.array([idx_xy[1], idx_xy[0]], dtype=np.int32)  # Swap x and y for grid indexing
         
-        # Search for the z index (layer number) using the precomputed layer modes
-        z_height = pos[2]  # Extract the z-coordinate
-        z_idx = -1  # Default to -1 if no valid layer is found
+        z_height = pos[2] 
+        z_idx = -1
         for s in range(self.elev_g.shape[0]):
             print(f"Layer height {s}: {self.elev_g[s, idx_xy[1], idx_xy[0]]}")
             if abs(z_height - self.elev_g[s, idx_xy[1], idx_xy[0]]) <= self.resolution*2:
                 z_idx = s
                 break
         
-        # Combine z_idx with x and y indices
         idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.float32)
         return idx
     def sampleUniformPointsInSpace(self):
-        """
-        Sample points using Poisson Disk Sampling to ensure uniform spatial coverage
-        with a minimum distance between candidate viewpoints.
-
-        Returns:
-            np.ndarray: Array of valid sampled points (s, x, y indices).
-            np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
-        """
-        # Project traversable 3D grid to 2D (top-down view)
         traversable_mask = (self.trav < self.cost_barrier) & (self.elev_g > -90)
         traversable_indices = np.argwhere(traversable_mask)
         xy_coords = np.array([
@@ -304,7 +252,6 @@ class TomogramCoveragePlanner(object):
             for _, x, y in traversable_indices
         ])
 
-        # Poisson disk sampling using Bridson's algorithm
         def bridson_sampling(width, height, r, k=30):
             cell_size = r / np.sqrt(2)
             grid_width = int(np.ceil(width / cell_size))
@@ -329,7 +276,6 @@ class TomogramCoveragePlanner(object):
                                 return False
                 return True
 
-            # Initial sample
             grid_spacing = r / np.sqrt(2)
             x_coords = np.arange(grid_spacing / 2, width, grid_spacing)
             y_coords = np.arange(grid_spacing / 2, height, grid_spacing)
@@ -362,20 +308,16 @@ class TomogramCoveragePlanner(object):
 
             return np.array(samples)
 
-        # Fit bounding box
         xy_min = xy_coords.min(axis=0)
         xy_max = xy_coords.max(axis=0)
         width, height = xy_max - xy_min
         poisson_samples = bridson_sampling(width, height, r=2,k=10)
         poisson_samples += xy_min
 
-        # Use k-d tree to snap Poisson samples to closest traversable locations
         tree = cKDTree(xy_coords)
         _, indices = tree.query(poisson_samples)
         selected_indices = traversable_indices[indices]
 
-        # Remove duplicates
-            # Filter out points with the same x, y indices and the same exact height in the elevation map
         unique_points = []
         seen_xy = {}
         for s, x, y in selected_indices:
@@ -387,7 +329,6 @@ class TomogramCoveragePlanner(object):
 
         unique_indices = np.array(unique_points, dtype=np.int32)
 
-        # Convert to map coordinates
         sampled_xyz = np.empty((len(unique_indices), 3), dtype=np.float32)
         for idx, (s, x, y) in enumerate(unique_indices):
             map_x = (x - self.offset[0]) * self.resolution + self.center[0]
@@ -398,26 +339,14 @@ class TomogramCoveragePlanner(object):
         return unique_indices, sampled_xyz
 
     def sampleUniformPointsInSpace_idle(self):
-        """
-        Sample points that are uniformly distributed in space with a fixed distance equal to the sensor range
-        in the x and y directions, and a smaller fixed step in the vertical (slice) direction.
-
-        Note:
-            the grid is indexed as (slice, y, x), where slice is the first dimension. The notaion in this function is reversed such that x_indices is actually the y dimension.
-    
-        Returns:
-            np.ndarray: Array of valid sampled points (s, x, y indices).
-            np.ndarray: Array of valid sampled points in map coordinates (x, y, z).
-        """
         step_x = max(2, int(1.05 / self.resolution))  # Step size in the x dimension
         step_y = max(2, int(1.05 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
         x_indices = np.arange(0, self.elev_g.shape[1], step_x)
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
         sampled_indices = np.array(np.meshgrid(slice_indices, x_indices, y_indices, indexing="ij"))
-        sampled_indices = sampled_indices.reshape(3, -1).T  # Reshape to (N, 3)
+        sampled_indices = sampled_indices.reshape(3, -1).T
     
-        # Filter out invalid or untraversable points
         valid_indices = []
         for s, x, y in sampled_indices:
             if self.trav[s, x, y] < 30 and self.elev_g[s, x, y] > -90:
@@ -425,7 +354,6 @@ class TomogramCoveragePlanner(object):
     
         valid_indices = np.array(valid_indices)
     
-    # Filter out points with the same x, y indices and the same exact height in the elevation map
         unique_points = []
         seen_xy = {}
         for s, x, y in valid_indices:
@@ -438,7 +366,6 @@ class TomogramCoveragePlanner(object):
         unique_indices = np.array(unique_points, dtype=np.int32)
 
     
-        # Convert valid indices to map coordinates
         sampled_xyz = np.empty((len(unique_indices), 3), dtype=np.float32)
         for idx, (s, x, y) in enumerate(unique_indices):
             map_x = (x - self.offset[0]) * self.resolution + self.center[0]
@@ -449,15 +376,6 @@ class TomogramCoveragePlanner(object):
         return unique_indices, sampled_xyz
 
     def sampleTraversablePoints_rad(self, num_samples):
-        """
-        Sample a uniform set of traversable points from the travel cost map.
-    
-        Args:
-            num_samples (int): The number of points to sample.
-    
-        Returns:
-            np.ndarray: Array of sampled traversable points (x, y, z indices).
-        """
         traversable_mask = (self.trav < self.cost_barrier) & (self.elev_g >= 0) 
         traversable_indices = np.argwhere(traversable_mask)
     
@@ -483,37 +401,16 @@ class TomogramCoveragePlanner(object):
     
         return sampled_idx, sampled_xyz
     def idx2pos_3D(self, idx):
-        """
-        Convert grid indices to map coordinates.
-
-        Args:
-            idx (np.ndarray): The grid indices (s, x, y).
-
-        Returns:
-            np.ndarray: The map coordinates (x, y, z).
-        """
-        # Convert grid indices to map coordinates
         map_x = (idx[1] - self.offset[0]) * self.resolution + self.center[0]
         map_y = (idx[2] - self.offset[1]) * self.resolution + self.center[1]
         map_z = self.elev_g[idx[0], idx[1], idx[2]]
         return np.array([map_x, map_y, map_z], dtype=np.float32)
     
     def getExploredGraph(self):
-        """
-        Get the explored graph.
-
-        Returns:
-            np.ndarray: The explored graph.
-        """
         return self.explored
 
 
     def nextBestView(self):
-        """
-        Calculate the reward for each sampled point based on the number of unseen cells in its neighborhood.
-        Returns:
-            np.ndarray: Array of rewards for each sampled point.
-        """
         min_reward = 150
         finished = False
         sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace_idle()
@@ -523,7 +420,6 @@ class TomogramCoveragePlanner(object):
         candidate_points_angles = np.empty((0,), dtype=np.float32)
         num = 0
 
-        # Prepare CSV file for timing logs
         timing_csv = os.path.join(self.tomo_dir, "cpu_reward_profile.csv")
         if not os.path.exists(timing_csv):
             with open(timing_csv, "w", newline="") as f:
@@ -535,7 +431,6 @@ class TomogramCoveragePlanner(object):
             if np.nansum(self.explored) >= self.cfg.planner.coverage_threshold * target_num:
                 break
 
-            # --- Filter out candidates that are already in explored regions ---
             mask = []
             for idx in range(sampled_points_idx.shape[0]):
                 s, x, y = sampled_points_idx[idx]

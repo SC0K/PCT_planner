@@ -47,31 +47,6 @@ sampled_points_pub = rospy.Publisher("/sampled_points", PointCloud2, latch=True,
 
 def pct_plan():
     planner.loadTomogram(tomo_file)
-
-    # traj_3d = planner.plan(start_pos, end_pos)
-    # if traj_3d is not None:
-    #     path_pub.publish(traj2ros(traj_3d))
-    #     print("Trajectory published")
-#########################  Test sampled points ################################
-    # sampled_points_idx, sampled_points_xyz = planner.sampleTraversablePoints( num_samples=1000)
-    # sampled_points_idx, sampled_points_xyz = planner.sampleUniformPointsInSpace()
-    # print("Candidate points:", sampled_points_xyz.shape)
-    # publish_points(sampled_points_xyz)
-   
-########################## Test path planning between any two points ##############################
-    # candidate_points_idx = np.array([[  0, 250, 176], [  0, 400, 170]])
-    # print(planner.trav.shape)
-    # print("-----------------heights:", planner.elev_g[candidate_points_idx[0][0], candidate_points_idx[0][1], candidate_points_idx[0][2]], planner.elev_g[candidate_points_idx[1][0], candidate_points_idx[1][1], candidate_points_idx[1][2]])
-    # candidate_points_xyz = np.zeros_like(candidate_points_idx, dtype=np.float32)
-    # candidate_points_xyz[0] = planner.idx2pos_3D(candidate_points_idx[0])
-    # candidate_points_xyz[1] = planner.idx2pos_3D(candidate_points_idx[1])
-    # publish_points(candidate_points_xyz)
-    
-    # traj_3d = planner.plan_with_idx(candidate_points_idx[0], candidate_points_idx[1])
-    # if traj_3d is not None:
-    #     path_pub.publish(traj2ros(traj_3d))
-    #     print("Trajectory published")
-# ################################################################
     start_time = time.time()
     computeNBVpoints()
     end_time = time.time()
@@ -84,10 +59,9 @@ def pct_plan():
     # publish_points(candidate_points_xyz)
 
 #################### Compute adjacency matrix computation ##############################
-    # Computation time ~ 60s for 60 points
-    # adjacency = compute_weighted_euclidean_adjacency(candidate_points_xyz, z_weight=3.0)
-    # adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
-    # np.save("adjacency_matrix.npy", adjacency)
+    adjacency = compute_weighted_euclidean_adjacency(candidate_points_xyz, z_weight=3.0)
+    adjacency = planner.compute_adjacency_matrix(candidate_points_idx)
+    np.save("adjacency_matrix.npy", adjacency)
 # ############################# Solving TSP problem ##############################
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
@@ -103,55 +77,54 @@ def pct_plan():
     # print("Viewpoints:", candidate_points_idx)
     # publish_points(start_point.reshape(1, 3), frame_id="map")
 
-    
-    # np.set_printoptions(threshold=np.inf)
-    # print("Adjacency matrix:", adjacency_matrix)  
 
-    # updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
-    # remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
-    # print("Updated adjacency matrix:", updated_adjacency_matrix.shape)
-    # np.save("reachable_adjacency_matrix.npy", updated_adjacency_matrix)
-    # np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
-    # np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
-    # np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
-    # publish_points(updated_sampled_points_xyz)
-    # # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
-    # # np.set_printoptions(threshold=np.inf)
-    # # print("Adjacency matrix:", updated_adjacency_matrix)  
-    # # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
-    # # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
-    # tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
-    # np.save("shortest_path_idx.npy", tsp_path)
-    # # publish_points(updated_sampled_points_xyz)
-    # ## TODO: recompute the explored region because some candidates that are not reachable are removed   
-    # print("TSP Path:", tsp_path)
-    # print("TSP Cost:", tsp_cost)
-    # global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
-    # print("Global path:", global_path)
-    # full_trajectory,segment_trajectory = generate_global_trajectory(global_path, planner)
-    # # Rearrange the candidate points to start from the first point in the global path
-    # candidate_points_xyz_path = candidate_points_xyz[tsp_path]
-    # np.save("candidate_points_xyz_path.npy", candidate_points_xyz_path)
-    # np.save("segment_trajectory.npy", segment_trajectory, allow_pickle=True)
-    # if len(full_trajectory) > 0:
-    #     path_pub.publish(traj2ros(full_trajectory))
-    #     np.save("full_trajectory.npy", full_trajectory)
-    #     print("Full 3D trajectory published")
-    # else:
-    #     rospy.logwarn("Failed to generate a full 3D trajectory")
-    # full_trajectory = np.load("full_trajectory.npy")
-    # path_pub.publish(traj2ros(full_trajectory))
-    # length = compute_trajectory_length(full_trajectory)
-    # print(f"Trajectory Length: {length:.2f} meters")
-    # explored_area, explored_cells = compute_explored_region(candidate_points_idx, candidate_angles)
-    # print(f"Explored Area: {explored_area:.2f} m^2")
-    # publish_explored_cells(
-    #     explored_cells,
-    #     planner.elev_g,
-    #     planner.resolution,
-    #     planner.center,
-    #     planner.offset
-    # )
+    updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz = \
+    remove_unreachable_nodes(adjacency_matrix, candidate_points_idx, candidate_angles, candidate_points_xyz)    # remove unreachable nodes
+    print("Updated adjacency matrix:", updated_adjacency_matrix.shape)
+    np.save("reachable_adjacency_matrix.npy", updated_adjacency_matrix)
+    np.save("reachable_sampled_points_idx.npy", updated_sampled_points_idx)
+    np.save("reachable_sampled_points_angles.npy", updated_sampled_points_angles)
+    np.save("reachable_sampled_points.npy", updated_sampled_points_xyz)
+    publish_points(updated_sampled_points_xyz)
+    # updated_adjacency_matrix = np.load("reachable_adjacency_matrix.npy")
+    # np.set_printoptions(threshold=np.inf)
+    # print("Adjacency matrix:", updated_adjacency_matrix)  
+    
+    # tsp_path, tsp_cost = solve_tsp_nearest_neighbor(updated_adjacency_matrix, start_node=0)
+    # tsp_path, tsp_cost = solve_tsp_simulated_annealing(updated_adjacency_matrix, x0=0)
+    tsp_path, tsp_cost = solve_tsp_local_search(updated_adjacency_matrix, x0=0) 
+
+    np.save("shortest_path_idx.npy", tsp_path)
+    publish_points(updated_sampled_points_xyz)
+    ## TODO: recompute the explored region because some candidates that are not reachable are removed   
+    print("TSP Path:", tsp_path)
+    print("TSP Cost:", tsp_cost)
+    global_path = compute_global_path_idx(tsp_path, updated_sampled_points_idx)
+    print("Global path:", global_path)
+    full_trajectory,segment_trajectory = generate_global_trajectory(global_path, planner)
+    # Rearrange the candidate points to start from the first point in the global path
+    candidate_points_xyz_path = candidate_points_xyz[tsp_path]
+    np.save("candidate_points_xyz_path.npy", candidate_points_xyz_path)
+    np.save("segment_trajectory.npy", segment_trajectory, allow_pickle=True)
+    if len(full_trajectory) > 0:
+        path_pub.publish(traj2ros(full_trajectory))
+        np.save("full_trajectory.npy", full_trajectory)
+        print("Full 3D trajectory published")
+    else:
+        rospy.logwarn("Failed to generate a full 3D trajectory")
+    full_trajectory = np.load("full_trajectory.npy")
+    path_pub.publish(traj2ros(full_trajectory))
+    length = compute_trajectory_length(full_trajectory)
+    print(f"Trajectory Length: {length:.2f} meters")
+    explored_area, explored_cells = compute_explored_region(candidate_points_idx, candidate_angles)
+    print(f"Explored Area: {explored_area:.2f} m^2")
+    publish_explored_cells(
+        explored_cells,
+        planner.elev_g,
+        planner.resolution,
+        planner.center,
+        planner.offset
+    )
 def compute_weighted_euclidean_adjacency(points_xyz, z_weight=2.0):
     """
     Compute an adjacency matrix using weighted Euclidean distance.
@@ -183,7 +156,6 @@ def compute_explored_region(points_idx, points_angles):
         current_height = planner.elev_g[point_index[0], point_index[1], point_index[2]]
         same_height_layers = np.where(np.abs(planner.elev_g[:, point_index[1], point_index[2]] - current_height) < 0.5)[0]
         base_angle = points_angles[i]
-        # Fan angles in radians
         angles = np.deg2rad(np.arange(base_angle - planner.sensor_fov / 2,
                                       base_angle + planner.sensor_fov / 2 + 1e-3,
                                       step=5))
@@ -212,7 +184,7 @@ def compute_explored_region(points_idx, points_angles):
             for y in range(Explored_cells.shape[2]):
                 if Explored_cells[s, x, y] > 0:
                     h = planner.elev_g[s, x, y]
-                    key = (x, y, round(h, 2))  # round to avoid floating point issues
+                    key = (x, y, round(h, 2))  
                     explored_set.add(key)
     explore_area = len(explored_set) * planner.resolution ** 2
     return explore_area, Explored_cells
@@ -224,18 +196,6 @@ def compute_explored_region(points_idx, points_angles):
     
     
 def generate_global_trajectory(global_path, planner):
-    """
-    Generate a 3D trajectory for the global path by concatenating the trajectories
-    between consecutive points. Also store each segment's trajectory.
-
-    Args:
-        global_path (np.ndarray): The global path as a sequence of 3D points.
-        planner (TomogramCoveragePlanner): The planner object to compute trajectories.
-
-    Returns:
-        np.ndarray: The concatenated 3D trajectory for the global path.
-        dict: Dictionary mapping (start_idx, end_idx) to each segment's trajectory.
-    """
     full_trajectory = []
     segment_trajectories = {}
 
@@ -243,12 +203,10 @@ def generate_global_trajectory(global_path, planner):
         start_pos = global_path[i]
         end_pos = global_path[i + 1]
 
-        # Compute the 3D trajectory between the two points
         traj_3d = planner.plan_with_idx(start_pos, end_pos)
         print(f"Segment {i} to {i+1}: Start {start_pos}, End {end_pos}, Trajectory length: {len(traj_3d) if traj_3d is not None else 'None'}")
         if traj_3d is not None:
             full_trajectory.extend(traj_3d) 
-            # Store the segment trajectory
             segment_trajectories[(i, i+1)] = np.array(traj_3d)
         else:
             rospy.logwarn(f"Failed to compute trajectory between {start_pos} and {end_pos}")
@@ -256,13 +214,6 @@ def generate_global_trajectory(global_path, planner):
 
 
 def find_non_diagonal_inf(adjacency_matrix):
-    """
-    Find and print the indices of non-diagonal entries in the adjacency matrix that are `inf`.
-    For debugging purposes.
-
-    Args:
-        adjacency_matrix (np.ndarray): The adjacency matrix of the graph.
-    """
     n = adjacency_matrix.shape[0]
     for i in range(n):
         for j in range(n):
@@ -271,9 +222,6 @@ def find_non_diagonal_inf(adjacency_matrix):
 
 
 def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_points_angles, sampled_points_xyz):
-    """
-    Remove isolated nodes (with all `inf` in both their row and column excluding the diagonal).
-    """
     n = adjacency_matrix.shape[0]
     rows_to_remove = []
     for i in np.arange(0, n):
@@ -283,7 +231,6 @@ def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_point
             adjacency_matrix[i,i] = 0
             if adjacency_matrix[0,i] == np.inf:
                 rows_to_remove.append(i)
-    # Remove rows and columns corresponding to isolated nodes
     updated_adjacency_matrix = np.delete(adjacency_matrix, rows_to_remove, axis=0)
     updated_adjacency_matrix = np.delete(updated_adjacency_matrix, rows_to_remove, axis=1)
     updated_sampled_points_idx = np.delete(sampled_points_idx, rows_to_remove, axis=0)
@@ -294,14 +241,9 @@ def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_point
 
 
 def computeNBVpoints():
-    # Compute the next best view points
     candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
     print("Candidate points:", candidate_points_xyz)
 
-    # Publish sampled points
-    # candidate_points_idx = candidate_points_idx[:, [0, 2, 1]].astype(np.int32)  # Switch the order of x and y for planning and ensure integers
-
-    # Filter out points with the same x, y values in layers with the same mode heights
     unique_points_idx = []
     unique_points_xyz = []
     unique_angles = []
@@ -326,23 +268,11 @@ def computeNBVpoints():
     # print("Filtered sampled points (indices):", candidate_points_idx)
     # print("Filtered sampled points (xyz):", candidate_points_xyz)
     # print("Filtered sampled points (angles):", candidate_angles)
-    # Save the sampled points to a file
     np.save("sampled_points.npy", candidate_points_xyz)
     np.save("sampled_points_idx.npy", candidate_points_idx)
     np.save("sampled_points_angles.npy", candidate_angles)
 
 def solve_tsp_nearest_neighbor(adjacency_matrix, start_node=0):
-    """
-    Solve the TSP using the Nearest Neighbor Heuristic. Return to the starting node.
-
-    Args:
-        adjacency_matrix (np.ndarray): The adjacency matrix of the graph.
-        start_node (int): The starting node for the TSP.
-
-    Returns:
-        list: The order of nodes in the TSP path.
-        float: The total cost of the TSP path.
-    """
     n = adjacency_matrix.shape[0]
     visited = [False] * n
     path = [start_node]
@@ -375,31 +305,12 @@ def solve_tsp_nearest_neighbor(adjacency_matrix, start_node=0):
     return path, total_cost
 
 def compute_global_path_idx(tsp_path, candidate_points_idx):
-    """
-    Compute the global path in 3D space based on the TSP path.
-
-    Args:
-        tsp_path (list): The order of nodes in the TSP path.
-        candidate_points_xyz (np.ndarray): The 3D coordinates of the candidate points.
-
-    Returns:
-        np.ndarray: The global path as a sequence of 3D points.
-    """
     global_path = []
     for idx in tsp_path:
         global_path.append(candidate_points_idx[idx])
     return np.array(global_path)
 
 def publish_points(points_xyz, frame_id="map"):
-    """
-    Publish sampled points as a PointCloud2 message.
-
-    Args:
-        sampled_points (np.ndarray): Array of sampled points (x, y indices).
-        resolution (float): Resolution of the grid.
-        center (np.ndarray): The center of the grid in map coordinates.
-        frame_id (str): The frame ID for the PointCloud2 message.
-    """
     #     # Convert sampled points to 3D coordinates (x, y, z)
     # points_3d = []
     # for s, x, y in sampled_points_idx:
@@ -409,7 +320,6 @@ def publish_points(points_xyz, frame_id="map"):
     #     map_z = 0.0  # Assume z = 0 for visualization
     #     points_3d.append([map_x, map_y, map_z])
 
-    # Create a PointCloud2 message
     header = rospy.Header()
     header.stamp = rospy.Time.now()
     header.frame_id = frame_id
@@ -422,21 +332,9 @@ def publish_points(points_xyz, frame_id="map"):
 
     point_cloud_msg = pc2.create_cloud(header, fields, points_xyz)
 
-    # Publish the message
     sampled_points_pub.publish(point_cloud_msg)
 
 def publish_explored_cells(explored_cells, elev_g, resolution, center, offset, frame_id="map"):
-    """
-    Publish the explored cells as a PointCloud2 message for visualization in RViz.
-
-    Args:
-        explored_cells (np.ndarray): The explored cells array.
-        elev_g (np.ndarray): The elevation grid.
-        resolution (float): The resolution of the grid.
-        center (np.ndarray): The center of the map.
-        offset (np.ndarray): The offset of the grid.
-        frame_id (str): The frame ID for the PointCloud2 message.
-    """
     header = Header()
     header.stamp = rospy.Time.now()
     header.frame_id = frame_id
@@ -461,15 +359,6 @@ def publish_explored_cells(explored_cells, elev_g, resolution, center, offset, f
     explored_cells_pub.publish(point_cloud_msg)
 
 def compute_trajectory_length(trajectory):
-    """
-    Compute the total length of a 3D trajectory in meters.
-
-    Args:
-        trajectory (np.ndarray): The trajectory as a sequence of 3D points (N x 3).
-
-    Returns:
-        float: The total length of the trajectory in meters.
-    """
     if len(trajectory) < 2:
         return 0.0 
     distances = np.linalg.norm(np.diff(trajectory, axis=0), axis=1)

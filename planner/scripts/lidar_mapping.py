@@ -50,7 +50,6 @@ class LidarMapperNode:
             if points.shape[0] == 0:
                 return
     
-            # Downsample and transform points
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(points)
             pcd_downsampled = pcd.voxel_down_sample(self.voxel_size)
@@ -65,7 +64,6 @@ class LidarMapperNode:
             points_transformed_cp = points_hom @ transform_cp.T
             points_cp = points_transformed_cp[:, :3]
     
-            # Compute voxel indices
             voxel_indices_cp = cp.floor(points_cp / self.voxel_size).astype(cp.int32) - cp.array(self.min_idx)
             valid_mask = cp.all((voxel_indices_cp >= 0) & (voxel_indices_cp < cp.array(self.grid_shape)), axis=1)
             valid_voxel_indices_cp = voxel_indices_cp[valid_mask]
@@ -73,7 +71,6 @@ class LidarMapperNode:
             if indices_np.shape[0] == 0:
                 return
 
-            # === Optionally dilate scanned voxels ===
             if self.dilate_scanned_voxels:
                 scanned_grid = cp.zeros(self.grid_shape, dtype=cp.bool_)
                 scanned_grid[valid_voxel_indices_cp[:, 0], valid_voxel_indices_cp[:, 1], valid_voxel_indices_cp[:, 2]] = True
@@ -82,7 +79,6 @@ class LidarMapperNode:
                 dilated_indices_cp = cp.argwhere(scanned_grid)
                 indices_np = cp.asnumpy(dilated_indices_cp)
 
-            # Publish as PointCloud2 for visualization
             vis_points = []
             for idx in indices_np:
                 x = (idx[0] + self.min_idx[0] + 0.5) * self.voxel_size
@@ -95,21 +91,18 @@ class LidarMapperNode:
             pc2_msg = pc2.create_cloud_xyz32(header, vis_points)
             self.lidar_voxel_pub.publish(pc2_msg)
     
-            # Publish all voxel indices
             idx_msg = Int32MultiArray()
             idx_msg.data = indices_np.flatten().tolist()
             idx_msg.layout.dim.append(MultiArrayDimension(label="voxel", size=indices_np.shape[0], stride=indices_np.size))
             idx_msg.layout.dim.append(MultiArrayDimension(label="xyz", size=3, stride=3))
             self.lidar_voxel_idx_pub.publish(idx_msg)
     
-            # --- Find and publish new voxels (outside hash grid with dilation) ---
             if indices_np.shape[0] > 0:
                 indices_cp = cp.array(indices_np)
                 tx = indices_cp[:, 0]
                 ty = indices_cp[:, 1]
                 tz = indices_cp[:, 2]
     
-                # Dilation control for hash grid
                 if hasattr(self.planner, "hash_grid"):
                     hash_grid = self.planner.hash_grid
                 else:
