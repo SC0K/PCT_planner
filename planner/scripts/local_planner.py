@@ -838,7 +838,7 @@ class LidarMappingNode:
             self.global_path = np.array(full_trajectory)
             self.current_waypoint_idx = 0
             self.tomo_update_flag = False
-            self.target_voxels_candidates = self.planner.recompute_visible_voxels_online(self.candidate_path_idx, self.candidate_points_angles)
+            self.target_voxels_candidates = self.planner.recompute_visible_voxels_online(self.candidate_points_idx, self.candidate_points_angles)
     def publishTomogram(self, elev_g, trav):
         header = Header()
         header.seq = 0

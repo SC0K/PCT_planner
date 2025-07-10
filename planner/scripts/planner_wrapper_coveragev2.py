@@ -771,29 +771,17 @@ class TomogramCoveragePlanner(object):
     def compute_explored_voxels(self, candidate_points_xyz, angles, use_dilation=True):
         import cupyx.scipy.ndimage as cp_ndimage
     
-        explored_voxels_max = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
         candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])  # Adjust for z-axis
+        angles = np.asarray(angles)
+        # Use batched_ray_reward for all candidate poses and angles
+        rewards, visibles = self.batched_ray_reward(candidate_points_xyz, angles)
+    
+        explored_voxels_max = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
         explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
-        for i, candidate_pose in enumerate(candidate_points_xyz):
-            print(f"Exploring candidate pose: {candidate_pose}")
-            orientation = np.array([
-                [np.cos(np.radians(angles[i])), -np.sin(np.radians(angles[i])), 0],
-                [np.sin(np.radians(angles[i])),  np.cos(np.radians(angles[i])), 0],
-                [0, 0, 1]
-            ])
-            visible = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape, self.hash_grid,
-                self.fov_vert, self.fov_hor, self.sensor_range,
-                self.resolution_raycast, n_rays=50)
-            visible_max = get_visible_voxels_first_hit(
-                candidate_pose, orientation, self.voxel_size, self.min_idx, self.grid_shape, self.hash_grid,
-                self.fov_vert, 360, self.sensor_range_analysis,
-                self.resolution_raycast, n_rays=50)
-            for v in visible_max:
-                local_idx = tuple(v - self.min_idx)
-                explored_voxels_max[local_idx] = True
+        for i, visible in enumerate(visibles):
             for v in visible:
-                local_idx = tuple(v - self.min_idx)
+                local_idx = tuple(np.array(v) - self.min_idx)
+                explored_voxels_max[local_idx] = True
                 explored_voxels_candidate[i][local_idx] = True
     
         if use_dilation:

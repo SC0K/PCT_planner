@@ -141,7 +141,9 @@ def pct_plan():
     path_pub.publish(traj2ros(full_trajectory))
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
-    explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
+    # explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
+    explored_cells, explored_cells_candidate = planner.compute_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles)
+    # visualize_explored_cells(explored_cells_candidate[1], planner.min_idx, planner.resolution_raycast)
     publish_points(updated_sampled_points_xyz)
     area = compute_covered_area(explored_cells, planner.resolution_raycast)
     print(f"Covered Area: {area:.2f} m^2")
@@ -150,7 +152,29 @@ def pct_plan():
     print(f"Full trajectory generated in {time_end2 - time_start2:.4f} seconds")
     # print(f"Adjacency matrix computed in {time_enda - time_starta:.2f} seconds")
     print(f"Number of candidate points: {len(updated_sampled_points_idx)}")
+def visualize_explored_cells(explored_voxels, min_idx, voxel_size):
+    import open3d as o3d
+    import numpy as np
 
+    # Convert to numpy if needed
+    if hasattr(explored_voxels, "get"):
+        explored_np = explored_voxels.get()
+    else:
+        explored_np = np.asarray(explored_voxels)
+
+    indices = np.argwhere(explored_np)
+    if indices.shape[0] == 0:
+        print("No explored voxels to visualize.")
+        return
+
+    coords = (indices + min_idx) * voxel_size
+    points = coords.astype(np.float32)
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    colors = np.tile(np.array([[1.0, 0.0, 0.0]]), (points.shape[0], 1))
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    o3d.visualization.draw_geometries([pcd], window_name="Explored Voxels")
 def compute_explored_region(points_idx):
     candidate_points_idx = np.load("reachable_sampled_points_idx.npy").astype(np.int32)
     candidate_angles = np.load("reachable_sampled_points_angles.npy")
