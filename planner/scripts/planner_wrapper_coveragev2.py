@@ -520,7 +520,7 @@ class TomogramCoveragePlanner(object):
         idx = np.array([z_idx, idx_xy[0], idx_xy[1]], dtype=np.float32)
         return idx
         
-    def sampleUniformPointsInSpace(self):
+    def sampleUniformPointsInSpace(self, check_reachability=True, start_idx=None):
         step_x = max(1, int(1.05 / self.resolution))  # Step size in the x dimension
         step_y = max(1, int(1.05 / self.resolution))  # Step size in the y dimension
         slice_indices = np.arange(0, self.elev_g.shape[0], 1)
@@ -528,14 +528,14 @@ class TomogramCoveragePlanner(object):
         y_indices = np.arange(0, self.elev_g.shape[2], step_y)
         sampled_indices = np.array(np.meshgrid(slice_indices, x_indices, y_indices, indexing="ij"))
         sampled_indices = sampled_indices.reshape(3, -1).T  # Reshape to (N, 3)
-    
+
         valid_indices = []
         for s, x, y in sampled_indices:
             if self.trav[s, x, y] < 15 and self.elev_g[s, x, y] > -90:
                 valid_indices.append([s, x, y])
-    
+
         valid_indices = np.array(valid_indices)
-    
+
         unique_points = []
         seen_xy = {}
         for s, x, y in valid_indices:
@@ -547,14 +547,24 @@ class TomogramCoveragePlanner(object):
 
         unique_indices = np.array(unique_points, dtype=np.int32)
 
-    
+        # --- Reachability check ---
+        if check_reachability and len(unique_indices) > 0:
+            if start_idx is None:
+                start_idx = unique_indices[0]
+            reachable_indices = []
+            for idx in unique_indices:
+                traj = self.plan_with_idx_online(start_idx, idx)
+                if traj is not None and len(traj) > 1:
+                    reachable_indices.append(idx)
+            unique_indices = np.array(reachable_indices, dtype=np.int32)
+
         sampled_xyz = np.empty((len(unique_indices), 3), dtype=np.float32)
         for idx, (s, x, y) in enumerate(unique_indices):
             map_x = (x - self.offset[0]) * self.resolution + self.center[0]
             map_y = (y - self.offset[1]) * self.resolution + self.center[1]
             map_z = self.elev_g[s, x, y]
             sampled_xyz[idx] = [map_x, map_y, map_z]
-    
+
         return unique_indices, sampled_xyz
     def sampleUniformPointsInSpaceOnline(self, num_samples, reachable_from, center_idx, radius):
         s_c, x_c, y_c = np.round(center_idx).astype(int)
@@ -680,7 +690,7 @@ class TomogramCoveragePlanner(object):
     
         # Visualize the point cloud
         o3d.visualization.draw_geometries([vis_pcd], window_name="Explored Grid")
-    def nextBestView(self, k_best=1):
+    def nextBestView(self, k_best=1,start_idx=None):
         import cupyx.scipy.ndimage as cp_ndimage
 
         min_reward = 10  # Minimum reward threshold to consider a viewpoint valid
@@ -689,7 +699,7 @@ class TomogramCoveragePlanner(object):
         best_xyz = []
         finished = False
 
-        sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace()
+        sampled_points_idx, sampled_points_xyz = self.sampleUniformPointsInSpace(check_reachability=True, start_idx=None)
         # sampled_points_idx, sampled_points_xyz = self.filter_reachable_candidates(sampled_points_xyz_raw, sampled_points_idx_raw)
         # sampled_points_xyz = sampled_points_xyz[:5]
         # sampled_points_idx = sampled_points_idx[:5]
@@ -758,15 +768,30 @@ class TomogramCoveragePlanner(object):
 
         return best_idxs, best_angles, np.array(best_xyz) - np.array([0, 0, 0.6])
 
-    def recompute_visible_voxels_online(self, candidate_points_xyz, angles_deg):
-        candidate_points_xyz = np.asarray(candidate_points_xyz)
+    def recompute_visible_voxels_online(self, candidate_points_xyz, angles_deg, use_dilation=True):
+        import cupyx.scipy.ndimage as cp_ndimage
+    
+        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])
         angles_deg = np.asarray(angles_deg)
         assert candidate_points_xyz.shape[0] == angles_deg.shape[0], "Number of poses and angles must match"
     
-        candidate_points_xyz = candidate_points_xyz
+        _, visible_voxels_list = self.batched_ray_reward_online(candidate_points_xyz, angles_deg)
     
-        _, visible_voxels_list = self.batched_ray_reward(candidate_points_xyz, angles_deg)
-        return visible_voxels_list
+        # Convert list of sets to a 4D boolean CuPy array: (num_candidates, grid_shape...)
+        explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)
+        for i, visible in enumerate(visible_voxels_list):
+            for v in visible:
+                local_idx = tuple(np.array(v) - self.min_idx)
+                explored_voxels_candidate[i][local_idx] = True
+    
+        if use_dilation:
+            struct = cp.ones((2, 2, 1), dtype=cp.bool_)  # x×y×z
+            for i in range(explored_voxels_candidate.shape[0]):
+                dilated = cp_ndimage.binary_dilation(explored_voxels_candidate[i], structure=struct)
+                dilated = cp_ndimage.binary_dilation(dilated, structure=struct)
+                explored_voxels_candidate[i] = cp.logical_and(dilated, self.hash_grid)
+    
+        return explored_voxels_candidate
 
     def compute_explored_voxels(self, candidate_points_xyz, angles, use_dilation=True):
         import cupyx.scipy.ndimage as cp_ndimage
@@ -774,7 +799,7 @@ class TomogramCoveragePlanner(object):
         candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])  # Adjust for z-axis
         angles = np.asarray(angles)
         # Use batched_ray_reward for all candidate poses and angles
-        rewards, visibles = self.batched_ray_reward(candidate_points_xyz, angles)
+        _, visibles = self.batched_ray_reward(candidate_points_xyz, angles)
     
         explored_voxels_max = cp.zeros_like(self.hash_grid, dtype=cp.bool_)
         explored_voxels_candidate = cp.zeros((len(candidate_points_xyz),) + self.hash_grid.shape, dtype=cp.bool_)

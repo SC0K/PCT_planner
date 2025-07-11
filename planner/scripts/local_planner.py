@@ -834,11 +834,11 @@ class LidarMappingNode:
             t_end = time.time()
             rospy.loginfo(f"Total online replan time: {t_end - t_start:.3f} s")
     
-            self.replanning = False
             self.global_path = np.array(full_trajectory)
             self.current_waypoint_idx = 0
-            self.tomo_update_flag = False
             self.target_voxels_candidates = self.planner.recompute_visible_voxels_online(self.candidate_points_idx, self.candidate_points_angles)
+            self.tomo_update_flag = False
+            self.replanning = False
     def publishTomogram(self, elev_g, trav):
         header = Header()
         header.seq = 0
@@ -1026,7 +1026,7 @@ if __name__ == "__main__":
     cfg = Config()
     planner = TomogramCoveragePlanner(cfg)
     planner.loadTomogram("experiments/2F_2*1")
-    planner.loadVoxelMap("/your_directory/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1075)  # TODO: change to your directory
+    planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/experiments/2F_2*1.pcd", 0.1075)  # TODO: change to your directory
     # planner.loadVoxelMap("/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/rsc/pcd/building_LEE_1F.pcd", 0.2)
     node = LidarMappingNode(planner)
     node.follow_path()

@@ -24,7 +24,7 @@ cfg = Config()
 
 if args.scene == 'Building':
     # tomo_file = 'building2_9'
-    tomo_file = 'experiments/1F_2*1'
+    tomo_file = 'experiments/2F_2*1'
     # tomo_file = 'experiments/Becker_office_eval'
     # tomo_file = 'building_LEE_1F'
     # tomo_file = 'ETH_HPH'
@@ -71,7 +71,7 @@ def pct_plan():
     # print(f"\nRaw times: {timings}")
     # print(f"Average time: {np.mean(timings):.4f} seconds")
     # print(f"Standard deviation: {np.std(timings):.4f} seconds")
-    computeNBVpoints()
+    computeNBVpoints(start_point=None)  # TODO: choose a valid start point
     candidate_points_xyz = np.load("sampled_points.npy")
     candidate_points_idx = np.load("sampled_points_idx.npy").astype(np.int32)
     candidate_angles = np.load("sampled_points_angles.npy")
@@ -143,7 +143,8 @@ def pct_plan():
     print(f"Trajectory Length: {length:.2f} meters")
     # explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
     explored_cells, explored_cells_candidate = planner.compute_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles)
-    # visualize_explored_cells(explored_cells_candidate[1], planner.min_idx, planner.resolution_raycast)
+    # explored_cells_candidate_online = planner.recompute_visible_voxels_online(updated_sampled_points_xyz, updated_sampled_points_angles)
+    visualize_explored_cells(explored_cells, planner.min_idx, planner.resolution_raycast)
     publish_points(updated_sampled_points_xyz)
     area = compute_covered_area(explored_cells, planner.resolution_raycast)
     print(f"Covered Area: {area:.2f} m^2")
@@ -265,10 +266,10 @@ def remove_unreachable_nodes(adjacency_matrix, sampled_points_idx, sampled_point
     return updated_adjacency_matrix, updated_sampled_points_idx, updated_sampled_points_angles, updated_sampled_points_xyz
 
 
-def computeNBVpoints():
+def computeNBVpoints(start_point):
     # Compute the next best view points
     start_time = time.time()
-    candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView()
+    candidate_points_idx, candidate_angles, candidate_points_xyz = planner.nextBestView(start_idx=start_point)
     end_time = time.time()
     print(f"Time taken to compute NBV points: {end_time - start_time:.2f} seconds")
     planner.visualizeExploredGrid()
