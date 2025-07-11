@@ -23,5 +23,6 @@
         "specialfunctions": "cpp",
         "splines": "cpp",
         "*.cl": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/home/sitong/catkin_workspaces/pct_planning/src/PCT_planner/planner/lib/3rdparty/gtsam-4.1.1/gtsam_unstable/geometry"
 }

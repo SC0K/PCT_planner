@@ -766,12 +766,12 @@ class TomogramCoveragePlanner(object):
             sampled_points_xyz = sampled_points_xyz[keep_mask]
             sampled_points_idx = sampled_points_idx[keep_mask]
 
-        return best_idxs, best_angles, np.array(best_xyz) - np.array([0, 0, 0.6])
+        return best_idxs, best_angles, np.array(best_xyz) - np.array([0, 0, 0.5])
 
     def recompute_visible_voxels_online(self, candidate_points_xyz, angles_deg, use_dilation=True):
         import cupyx.scipy.ndimage as cp_ndimage
     
-        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])
+        candidate_points_xyz = candidate_points_xyz
         angles_deg = np.asarray(angles_deg)
         assert candidate_points_xyz.shape[0] == angles_deg.shape[0], "Number of poses and angles must match"
     
@@ -796,7 +796,6 @@ class TomogramCoveragePlanner(object):
     def compute_explored_voxels(self, candidate_points_xyz, angles, use_dilation=True):
         import cupyx.scipy.ndimage as cp_ndimage
     
-        candidate_points_xyz = candidate_points_xyz + np.array([0, 0, 0.5])  # Adjust for z-axis
         angles = np.asarray(angles)
         # Use batched_ray_reward for all candidate poses and angles
         _, visibles = self.batched_ray_reward(candidate_points_xyz, angles)

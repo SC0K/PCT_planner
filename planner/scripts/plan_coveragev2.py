@@ -90,7 +90,7 @@ def pct_plan():
     adjacency_matrix = np.load("adjacency_matrix.npy")  
 
 #     ## Optioal sometimes: make sure that the first candidate point is a valid view point (reachabl)
-    i,j = 0, 0
+    i,j = 0, 1
     adjacency_matrix[[i, j], :] = adjacency_matrix[[j, i], :]
     adjacency_matrix[:, [i, j]] = adjacency_matrix[:, [j, i]]
     candidate_points_idx[[i, j]] = candidate_points_idx[[j, i]]
@@ -142,9 +142,9 @@ def pct_plan():
     length = compute_trajectory_length(full_trajectory)
     print(f"Trajectory Length: {length:.2f} meters")
     # explored_cells = planner.compute_and_visualise_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles, True)
-    explored_cells, explored_cells_candidate = planner.compute_explored_voxels(updated_sampled_points_xyz, updated_sampled_points_angles)
-    # explored_cells_candidate_online = planner.recompute_visible_voxels_online(updated_sampled_points_xyz, updated_sampled_points_angles)
-    visualize_explored_cells(explored_cells, planner.min_idx, planner.resolution_raycast)
+    explored_cells, explored_cells_candidate = planner.compute_explored_voxels(updated_sampled_points_xyz + np.array([0,0,0.5]), updated_sampled_points_angles)
+    explored_cells_candidate_online = planner.recompute_visible_voxels_online(updated_sampled_points_xyz + np.array([0,0,0.5]), updated_sampled_points_angles)
+    visualize_explored_cells(explored_cells_candidate, planner.min_idx, planner.resolution_raycast)
     publish_points(updated_sampled_points_xyz)
     area = compute_covered_area(explored_cells, planner.resolution_raycast)
     print(f"Covered Area: {area:.2f} m^2")
